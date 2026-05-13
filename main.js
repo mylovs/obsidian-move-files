@@ -56,14 +56,22 @@ var MoveFileModal = class extends import_obsidian.Modal {
   async analyzeReferencedFiles() {
     const content = await this.app.vault.read(this.sourceFile);
     const references = this.extractReferences(content);
+    console.log('[MoveFilePlugin] Extracted references:', references);
+    
     const extensionMap = /* @__PURE__ */ new Map();
     const sourceFolder = this.sourceFile.parent?.path || "";
+    console.log('[MoveFilePlugin] Source folder:', sourceFolder);
+    
     for (const ref of references) {
       let file = this.app.vault.getAbstractFileByPath(ref);
+      console.log('[MoveFilePlugin] Looking for:', ref, '- found:', file ? file.path : 'null');
+      
       if (!(file instanceof import_obsidian.TFile) && sourceFolder) {
         const relativePath = `${sourceFolder}/${ref}`;
         file = this.app.vault.getAbstractFileByPath(relativePath);
+        console.log('[MoveFilePlugin] Trying relative:', relativePath, '- found:', file ? file.path : 'null');
       }
+      
       if (file instanceof import_obsidian.TFile) {
         const ext = file.extension.toLowerCase();
         if (!extensionMap.has(ext)) {
@@ -77,6 +85,9 @@ var MoveFileModal = class extends import_obsidian.Modal {
         });
       }
     }
+    
+    console.log('[MoveFilePlugin] Found groups:', Array.from(extensionMap.keys()));
+    
     this.groups = Array.from(extensionMap.entries()).map(([ext, files]) => ({
       extension: ext,
       files,

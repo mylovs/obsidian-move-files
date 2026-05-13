@@ -77,15 +77,22 @@ class MoveFileModal extends Modal {
     const content = await this.app.vault.read(this.sourceFile);
     const references = this.extractReferences(content);
     
+    console.log('[MoveFilePlugin] Extracted references:', references);
+    
     const extensionMap = new Map<string, ReferencedFile[]>();
     const sourceFolder = this.sourceFile.parent?.path || '';
+    
+    console.log('[MoveFilePlugin] Source folder:', sourceFolder);
     
     for (const ref of references) {
       let file = this.app.vault.getAbstractFileByPath(ref);
       
+      console.log('[MoveFilePlugin] Looking for:', ref, '- found:', file ? file.path : 'null');
+      
       if (!(file instanceof TFile) && sourceFolder) {
         const relativePath = `${sourceFolder}/${ref}`;
         file = this.app.vault.getAbstractFileByPath(relativePath);
+        console.log('[MoveFilePlugin] Trying relative:', relativePath, '- found:', file ? file.path : 'null');
       }
       
       if (file instanceof TFile) {
@@ -102,6 +109,8 @@ class MoveFileModal extends Modal {
       }
     }
 
+    console.log('[MoveFilePlugin] Found groups:', Array.from(extensionMap.keys()));
+    
     this.groups = Array.from(extensionMap.entries())
       .map(([ext, files]) => ({
         extension: ext,

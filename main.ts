@@ -112,9 +112,12 @@ class MoveFileModal extends Modal {
 
   /**
    * 从markdown内容中提取所有引用链接
-   * 支持两种链接格式：markdown链接 [text](path) 和 wiki链接 [[path]]
+   * 支持多种链接格式：
+   * - Markdown链接: [text](path)
+   * - Wiki链接: [[path]], ![[path]]
+   * - 带锚点/别名的Wiki链接: [[path#xx]], [[path|xx]], ![[path#xx]], ![[path|xx]]
    * @param content markdown文件内容
-   * @returns 去重后的引用路径列表
+   * @returns 去重后的引用路径列表（已提取纯路径，去掉锚点和别名）
    */
   private extractReferences(content: string): string[] {
     const references: string[] = [];
@@ -126,21 +129,55 @@ class MoveFileModal extends Modal {
       const link = match[2];
       // 过滤掉外部链接（http/https/mailto）
       if (link && !link.startsWith('http://') && !link.startsWith('https://') && !link.startsWith('mailto:')) {
-        references.push(link);
+        // 提取纯路径，去掉锚点（#后面的部分）
+        const purePath = this.extractPurePath(link);
+        if (purePath) {
+          references.push(purePath);
+        }
       }
     }
 
-    // 匹配wiki链接格式: [[path]]
-    const wikiLinkRegex = /\[\[([^\]]+)\]\]/g;
+    // 匹配wiki链接格式: [[path]], ![[path]], [[path#xx]], [[path|xx]], ![[path#xx]], ![[path|xx]]
+    // 支持可选的!前缀，然后是[[...]]
+    const wikiLinkRegex = /!?\[\[([^\]]+)\]\]/g;
     while ((match = wikiLinkRegex.exec(content)) !== null) {
       const link = match[1];
       if (link) {
-        references.push(link);
+        // 提取纯路径，去掉锚点（#后面的部分）和别名（|后面的部分）
+        const purePath = this.extractPurePath(link);
+        if (purePath) {
+          references.push(purePath);
+        }
       }
     }
 
     // 去重后返回
     return [...new Set(references)];
+  }
+
+  /**
+   * 从链接中提取纯路径部分
+   * 移除锚点（#后面的内容）和别名（|后面的内容）
+   * @param link 原始链接
+   * @returns 纯路径
+   */
+  private extractPurePath(link: string): string {
+    if (!link) return '';
+    
+    // 优先处理管道符（别名），因为别名格式是 [[path|alias]]
+    // 管道符后面的是显示文本，需要去掉
+    const pipeIndex = link.indexOf('|');
+    if (pipeIndex !== -1) {
+      link = link.substring(0, pipeIndex);
+    }
+    
+    // 处理锚点（#后面的内容）
+    const hashIndex = link.indexOf('#');
+    if (hashIndex !== -1) {
+      link = link.substring(0, hashIndex);
+    }
+    
+    return link.trim();
   }
 
   /**

@@ -8,7 +8,8 @@ import { App, Editor, MarkdownView, Modal, Notice, Plugin, TFile } from 'obsidia
 interface MoveFileRecord {
   sourcePath: string;  // 源文件路径
   destPath: string;    // 目标文件路径
-  timestamp: number;   // 移动时间戳
+  id: number;   // 移动时间戳
+  operation: 'move' | 'undo'; // 操作类型，'move' 表示移动， 'undo' 表示撤销
 }
 
 /**
@@ -20,6 +21,7 @@ interface ReferencedFile {
   path: string;        // 文件完整路径
   extension: string;   // 文件扩展名（小写）
   exists: boolean;     // 文件是否存在
+  selected: boolean;   // 是否选中
 }
 
 /**
@@ -89,7 +91,8 @@ class MoveFileModal extends Modal {
           name: file.name,
           path: file.path,
           extension: ext,
-          exists: true
+          exists: true,
+          selected: true
         });
       }
     }
@@ -110,7 +113,8 @@ class MoveFileModal extends Modal {
               name: resolvedFile.name,
               path: resolvedFile.path,
               extension: ext,
-              exists: true
+              exists: true,
+              selected: true
             });
           }
         }
@@ -126,75 +130,7 @@ class MoveFileModal extends Modal {
       .sort((a, b) => a.extension.localeCompare(b.extension));
   }
 
-  /**
-   * 从markdown内容中提取所有引用链接
-   * 支持多种链接格式：
-   * - Markdown链接: [text](path)
-   * - Wiki链接: [[path]], ![[path]]
-   * - 带锚点/别名的Wiki链接: [[path#xx]], [[path|xx]], ![[path#xx]], ![[path|xx]]
-   * @param content markdown文件内容
-   * @returns 去重后的引用路径列表（已提取纯路径，去掉锚点和别名）
-   */
-  private extractReferences(content: string): string[] {
-    const references: string[] = [];
-    
-    // 匹配markdown链接格式: [text](path)
-    const markdownLinkRegex = /\[([^\]]+)\]\(([^)]+)\)/g;
-    let match;
-    while ((match = markdownLinkRegex.exec(content)) !== null) {
-      const link = match[2];
-      // 过滤掉外部链接（http/https/mailto）
-      if (link && !link.startsWith('http://') && !link.startsWith('https://') && !link.startsWith('mailto:')) {
-        // 提取纯路径，去掉锚点（#后面的部分）
-        const purePath = this.extractPurePath(link);
-        if (purePath) {
-          references.push(purePath);
-        }
-      }
-    }
 
-    // 匹配wiki链接格式: [[path]], ![[path]], [[path#xx]], [[path|xx]], ![[path#xx]], ![[path|xx]]
-    // 支持可选的!前缀，然后是[[...]]
-    const wikiLinkRegex = /!?\[\[([^\]]+)\]\]/g;
-    while ((match = wikiLinkRegex.exec(content)) !== null) {
-      const link = match[1];
-      if (link) {
-        // 提取纯路径，去掉锚点（#后面的部分）和别名（|后面的部分）
-        const purePath = this.extractPurePath(link);
-        if (purePath) {
-          references.push(purePath);
-        }
-      }
-    }
-
-    // 去重后返回
-    return [...new Set(references)];
-  }
-
-  /**
-   * 从链接中提取纯路径部分
-   * 移除锚点（#后面的内容）和别名（|后面的内容）
-   * @param link 原始链接
-   * @returns 纯路径
-   */
-  private extractPurePath(link: string): string {
-    if (!link) return '';
-    
-    // 优先处理管道符（别名），因为别名格式是 [[path|alias]]
-    // 管道符后面的是显示文本，需要去掉
-    const pipeIndex = link.indexOf('|');
-    if (pipeIndex !== -1) {
-      link = link.substring(0, pipeIndex);
-    }
-    
-    // 处理锚点（#后面的内容）
-    const hashIndex = link.indexOf('#');
-    if (hashIndex !== -1) {
-      link = link.substring(0, hashIndex);
-    }
-    
-    return link.trim();
-  }
 
   /**
    * 获取所有被选中的文件列表
@@ -203,8 +139,10 @@ class MoveFileModal extends Modal {
   private getSelectedFiles(): ReferencedFile[] {
     const selected: ReferencedFile[] = [];
     for (const group of this.groups) {
-      if (group.selected) {
-        selected.push(...group.files);
+      for (const file of group.files) {
+        if (file.selected) {
+          selected.push(file);
+        }
       }
     }
     return selected;
@@ -217,9 +155,13 @@ class MoveFileModal extends Modal {
   private toggleGroup(groupExtension: string): void {
     const group = this.groups.find(g => g.extension === groupExtension);
     if (group) {
-      group.selected = !group.selected;
+      const newValue = !group.selected;
+      group.selected = newValue;
+      for (const file of group.files) {
+        file.selected = newValue;
+      }
     }
-    this.render();  // 重新渲染界面
+    this.render();
   }
 
   /**
@@ -230,14 +172,23 @@ class MoveFileModal extends Modal {
   private toggleFile(groupExtension: string, fileName: string): void {
     const group = this.groups.find(g => g.extension === groupExtension);
     if (group) {
-      const fileIndex = group.files.findIndex(f => f.name === fileName);
-      if (fileIndex !== -1) {
-        // 检查除当前文件外其他文件是否都被选中
-        const allSelected = group.files.every(f => f !== group.files[fileIndex] && this.isFileSelected(groupExtension, f.name));
-        group.selected = allSelected;
+      const file = group.files.find(f => f.name === fileName);
+      if (file) {
+        file.selected = !file.selected;
+        
+        const allSelected = group.files.every(f => f.selected);
+        const noneSelected = group.files.every(f => !f.selected);
+        
+        if (allSelected) {
+          group.selected = true;
+        } else if (noneSelected) {
+          group.selected = false;
+        } else {
+          group.selected = undefined;
+        }
       }
     }
-    this.render();  // 重新渲染界面
+    this.render();
   }
 
   /**
@@ -248,8 +199,9 @@ class MoveFileModal extends Modal {
    */
   private isFileSelected(groupExtension: string, fileName: string): boolean {
     const group = this.groups.find(g => g.extension === groupExtension);
-    if (!group || !group.selected) return false;
-    return true;
+    if (!group) return false;
+    const file = group.files.find(f => f.name === fileName);
+    return file?.selected ?? false;
   }
 
   /**
@@ -291,6 +243,7 @@ class MoveFileModal extends Modal {
       await this.createFolderIfNotExists(this.destinationPath);
 
       const movedFiles: MoveFileRecord[] = [];
+      const timestamps=Date.now();//记录移动操作的时间戳，撤销恢复时使用
 
       // 遍历移动每个选中的文件
       for (const refFile of selectedFiles) {
@@ -298,24 +251,30 @@ class MoveFileModal extends Modal {
         if (sourceFile instanceof TFile) {
           const destPath = `${this.destinationPath}/${sourceFile.name}`;
           
-          // 如果目标已存在同名文件，先删除
+          // 跳过源路径和目标路径相同的文件，跳过移动操作
+          if (sourceFile.path === destPath) {
+            continue;
+          }
+          
+          // 如果目标已存在同名文件，跳过移动操作
           const existingFile = this.app.vault.getAbstractFileByPath(destPath);
           if (existingFile) {
-            await this.app.vault.delete(existingFile);
+            continue;
           }
 
+          const sourceFilePath = sourceFile.path;
+
           // 移动文件（重命名操作）
-          await this.app.vault.rename(sourceFile, destPath);
+          await this.app.fileManager.renameFile(sourceFile, destPath);
           
           // 记录移动历史
           movedFiles.push({
-            sourcePath: sourceFile.path,
+            sourcePath: sourceFilePath,
             destPath: destPath,
-            timestamp: Date.now()
+            id: timestamps,
+            operation: 'move'
           });
 
-          // 更新源markdown文件中的链接引用
-          await this.updateMarkdownLinks(sourceFile.path, destPath);
         }
       }
 
@@ -341,47 +300,7 @@ class MoveFileModal extends Modal {
     this.render();  // 重新渲染以显示结果
   }
 
-  /**
-   * 更新源markdown文件中的链接引用
-   * 将旧路径替换为新路径，支持markdown链接和wiki链接两种格式
-   * @param oldPath 旧文件路径
-   * @param newPath 新文件路径
-   */
-  private async updateMarkdownLinks(oldPath: string, newPath: string): Promise<void> {
-    const content = await this.app.vault.read(this.sourceFile);
-    const oldName = this.app.vault.getAbstractFileByPath(oldPath)?.name || '';
-    
-    let newContent = content;
-    
-    // 替换markdown链接格式: [text](oldPath) -> [text](newPath)
-    newContent = newContent.replace(
-      new RegExp(`\\[([^\\]]+)\\]\\(${oldPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\)`, 'g'),
-      `[$1](${newPath})`
-    );
-    
-    // 替换markdown链接格式（仅文件名）: [text](oldName) -> [text](newPath)
-    newContent = newContent.replace(
-      new RegExp(`\\[([^\\]]+)\\]\\(${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\)`, 'g'),
-      `[$1](${newPath})`
-    );
-    
-    // 替换wiki链接格式: [[oldPath]] -> [[newPath]]
-    newContent = newContent.replace(
-      new RegExp(`\\[\\[${oldPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\]\\]`, 'g'),
-      `[[${newPath}]]`
-    );
-    
-    // 替换wiki链接格式（仅文件名）: [[oldName]] -> [[newPath]]
-    newContent = newContent.replace(
-      new RegExp(`\\[\\[${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\]\\]`, 'g'),
-      `[[${newPath}]]`
-    );
 
-    // 只有内容发生变化时才保存
-    if (newContent !== content) {
-      await this.app.vault.modify(this.sourceFile, newContent);
-    }
-  }
 
   /**
    * 保存移动历史到localStorage
@@ -566,42 +485,64 @@ export default class MoveFilePlugin extends Plugin {
   }
 
   private async undoLastMove(): Promise<void> {
-    const history = this.getMoveHistory();
-    if (history.length === 0) {
+    const movehistory = this.getMoveHistory();
+    if (movehistory.length === 0) {
       new Notice('No move history to undo.');
       return;
     }
-
-    const lastMove = history[0];
-    const destFile = this.app.vault.getAbstractFileByPath(lastMove.destPath);
-    
-    if (!(destFile instanceof TFile)) {
-      new Notice('File not found: ' + lastMove.destPath);
-      history.shift();
-      this.saveMoveHistory([]);
+    //获取最新id
+    const lastId = movehistory[movehistory.length - 1].id;
+    const lastMoveHistory = movehistory.find(record => record.id === lastId);
+    if (!lastMoveHistory) {
+      new Notice('No move history with id: ' + lastId);
       return;
     }
-
     try {
-      const existingSource = this.app.vault.getAbstractFileByPath(lastMove.sourcePath);
-      if (existingSource) {
-        await this.app.vault.delete(existingSource);
+      // 创建目标文件夹（如果不存在）
+      await this.createFolderIfNotExists(lastMoveHistory.destPath);
+
+      const movedFiles: MoveFileRecord[] = [];
+      const timestamps=Date.now();//记录移动操作的时间戳，撤销恢复时使用
+
+      // 遍历移动历史记录，撤销移动操作
+      for (const refFile of lastMoveHistory) {
+        const sourceFile = this.app.vault.getAbstractFileByPath(refFile.destPath);
+        if (sourceFile instanceof TFile) {
+          const destPath = `${refFile.sourcePath}/${sourceFile.name}`;
+          
+          // 跳过源路径和目标路径相同的文件，跳过移动操作
+          if (sourceFile.path === destPath) {
+            continue;
+          }
+          
+          // 如果目标已存在同名文件，跳过移动操作
+          const existingFile = this.app.vault.getAbstractFileByPath(destPath);
+          if (existingFile) {
+            continue;
+          }
+
+          const sourceFilePath = sourceFile.path;
+
+          // 移动文件（重命名操作）
+          await this.app.fileManager.renameFile(sourceFile, destPath);
+          
+          // 记录移动历史
+          movedFiles.push({
+            sourcePath: sourceFilePath,
+            destPath: destPath,
+            id: timestamps,
+            operation: 'undo'
+          });
+
+        }
       }
 
-      await this.app.vault.rename(destFile, lastMove.sourcePath);
+      // 保存移动历史记录
+      this.saveMoveHistory(movedFiles);
 
-      const sourceFile = this.app.vault.getAbstractFileByPath(lastMove.sourcePath);
-      if (sourceFile instanceof TFile) {
-        await this.updateLinksForUndo(sourceFile, lastMove.destPath, lastMove.sourcePath);
-      }
-
-      history.shift();
-      this.saveMoveHistory([]);
-      localStorage.setItem('obsidian-move-file-history', JSON.stringify(history));
-
-      new Notice('Successfully undid the last move.');
     } catch (error) {
-      new Notice('Error undoing move: ' + (error instanceof Error ? error.message : 'Unknown error'));
+      // 处理移动过程中的错误
+      new Notice(`Error undoing move: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 
@@ -617,39 +558,6 @@ export default class MoveFilePlugin extends Plugin {
     localStorage.setItem('obsidian-move-file-history', JSON.stringify(trimmedHistory));
   }
 
-  private async updateLinksForUndo(sourceFile: TFile, oldPath: string, newPath: string): Promise<void> {
-    const markdownFiles = this.app.vault.getFiles().filter(f => f.extension === 'md');
-    
-    for (const file of markdownFiles) {
-      const content = await this.app.vault.read(file);
-      let newContent = content;
-      
-      newContent = newContent.replace(
-        new RegExp(`\\[([^\\]]+)\\]\\(${oldPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\)`, 'g'),
-        `[$1](${newPath})`
-      );
-      
-      const oldName = oldPath.split('/').pop() || '';
-      newContent = newContent.replace(
-        new RegExp(`\\[([^\\]]+)\\]\\(${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\)`, 'g'),
-        `[$1](${newPath})`
-      );
-      
-      newContent = newContent.replace(
-        new RegExp(`\\[\\[${oldPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\]\\]`, 'g'),
-        `[[${newPath}]]`
-      );
-      
-      newContent = newContent.replace(
-        new RegExp(`\\[\\[${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\]\\]`, 'g'),
-        `[[${newPath}]]`
-      );
-
-      if (newContent !== content) {
-        await this.app.vault.modify(file, newContent);
-      }
-    }
-  }
 
   /**
    * 插件卸载时执行

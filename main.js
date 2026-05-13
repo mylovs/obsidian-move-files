@@ -54,24 +54,12 @@ var MoveFileModal = class extends import_obsidian.Modal {
    * 提取所有markdown链接和wiki链接引用的文件，按扩展名分组
    */
   async analyzeReferencedFiles() {
-    const content = await this.app.vault.read(this.sourceFile);
-    const references = this.extractReferences(content);
-    console.log('[MoveFilePlugin] Extracted references:', references);
-    
     const extensionMap = /* @__PURE__ */ new Map();
-    const sourceFolder = this.sourceFile.parent?.path || "";
-    console.log('[MoveFilePlugin] Source folder:', sourceFolder);
     
-    for (const ref of references) {
-      let file = this.app.vault.getAbstractFileByPath(ref);
-      console.log('[MoveFilePlugin] Looking for:', ref, '- found:', file ? file.path : 'null');
-      
-      if (!(file instanceof import_obsidian.TFile) && sourceFolder) {
-        const relativePath = `${sourceFolder}/${ref}`;
-        file = this.app.vault.getAbstractFileByPath(relativePath);
-        console.log('[MoveFilePlugin] Trying relative:', relativePath, '- found:', file ? file.path : 'null');
-      }
-      
+    const resolvedLinks = this.app.metadataCache.resolvedLinks[this.sourceFile.path] || {};
+    
+    for (const destPath of Object.keys(resolvedLinks)) {
+      const file = this.app.vault.getAbstractFileByPath(destPath);
       if (file instanceof import_obsidian.TFile) {
         const ext = file.extension.toLowerCase();
         if (!extensionMap.has(ext)) {
@@ -86,7 +74,28 @@ var MoveFileModal = class extends import_obsidian.Modal {
       }
     }
     
-    console.log('[MoveFilePlugin] Found groups:', Array.from(extensionMap.keys()));
+    const fileCache = this.app.metadataCache.getFileCache(this.sourceFile);
+    if (fileCache?.embeds) {
+      for (const embed of fileCache.embeds) {
+        const resolvedFile = this.app.metadataCache.getFirstLinkpathDest(embed.link, this.sourceFile.path);
+        if (resolvedFile instanceof import_obsidian.TFile) {
+          const ext = resolvedFile.extension.toLowerCase();
+          const existingFiles = extensionMap.get(ext) || [];
+          const alreadyExists = existingFiles.some(f => f.path === resolvedFile.path);
+          if (!alreadyExists) {
+            if (!extensionMap.has(ext)) {
+              extensionMap.set(ext, []);
+            }
+            extensionMap.get(ext).push({
+              name: resolvedFile.name,
+              path: resolvedFile.path,
+              extension: ext,
+              exists: true
+            });
+          }
+        }
+      }
+    }
     
     this.groups = Array.from(extensionMap.entries()).map(([ext, files]) => ({
       extension: ext,
@@ -408,6 +417,16 @@ var MoveFilePlugin = class extends import_obsidian.Plugin {
         }
       }
     });
+    this.addCommand({
+      id: "undo-move-referenced-files",
+      name: "Undo Last Move",
+      checkCallback: (checking) => {
+        if (checking) {
+          return this.hasMoveHistory();
+        }
+        this.undoLastMove();
+      }
+    });
     this.addRibbonIcon("folder-up", "Move Referenced Files", (evt) => {
       const activeView = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
       if (activeView && activeView.file) {
@@ -416,6 +435,79 @@ var MoveFilePlugin = class extends import_obsidian.Plugin {
         new import_obsidian.Notice("Please open a markdown file first.");
       }
     });
+  }
+  hasMoveHistory() {
+    const stored = localStorage.getItem("obsidian-move-file-history");
+    return stored && JSON.parse(stored).length > 0;
+  }
+  async undoLastMove() {
+    const history = this.getMoveHistory();
+    if (history.length === 0) {
+      new import_obsidian.Notice("No move history to undo.");
+      return;
+    }
+    const lastMove = history[0];
+    const destFile = this.app.vault.getAbstractFileByPath(lastMove.destPath);
+    if (!(destFile instanceof import_obsidian.TFile)) {
+      new import_obsidian.Notice("File not found: " + lastMove.destPath);
+      history.shift();
+      this.saveMoveHistory([]);
+      return;
+    }
+    try {
+      const existingSource = this.app.vault.getAbstractFileByPath(lastMove.sourcePath);
+      if (existingSource) {
+        await this.app.vault.delete(existingSource);
+      }
+      await this.app.vault.rename(destFile, lastMove.sourcePath);
+      const sourceFile = this.app.vault.getAbstractFileByPath(lastMove.sourcePath);
+      if (sourceFile instanceof import_obsidian.TFile) {
+        await this.updateLinksForUndo(sourceFile, lastMove.destPath, lastMove.sourcePath);
+      }
+      history.shift();
+      this.saveMoveHistory([]);
+      localStorage.setItem("obsidian-move-file-history", JSON.stringify(history));
+      new import_obsidian.Notice("Successfully undid the last move.");
+    } catch (error) {
+      new import_obsidian.Notice("Error undoing move: " + (error instanceof Error ? error.message : "Unknown error"));
+    }
+  }
+  getMoveHistory() {
+    const stored = localStorage.getItem("obsidian-move-file-history");
+    return stored ? JSON.parse(stored) : [];
+  }
+  saveMoveHistory(records) {
+    const history = this.getMoveHistory();
+    history.unshift(...records);
+    const trimmedHistory = history.slice(0, 10);
+    localStorage.setItem("obsidian-move-file-history", JSON.stringify(trimmedHistory));
+  }
+  async updateLinksForUndo(sourceFile, oldPath, newPath) {
+    const markdownFiles = this.app.vault.getFiles().filter(f => f.extension === "md");
+    for (const file of markdownFiles) {
+      const content = await this.app.vault.read(file);
+      let newContent = content;
+      newContent = newContent.replace(
+        new RegExp(`\\[([^\\]]+)\\]\\(${oldPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)`, "g"),
+        `[$1](${newPath})`
+      );
+      const oldName = oldPath.split("/").pop() || "";
+      newContent = newContent.replace(
+        new RegExp(`\\[([^\\]]+)\\]\\(${oldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)`, "g"),
+        `[$1](${newPath})`
+      );
+      newContent = newContent.replace(
+        new RegExp(`\\[\\[${oldPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\]\\]`, "g"),
+        `[[${newPath}]]`
+      );
+      newContent = newContent.replace(
+        new RegExp(`\\[\\[${oldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\]\\]`, "g"),
+        `[[${newPath}]]`
+      );
+      if (newContent !== content) {
+        await this.app.vault.modify(file, newContent);
+      }
+    }
   }
   /**
    * 插件卸载时执行

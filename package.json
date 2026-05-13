@@ -1,0 +1,29 @@
+
+{
+  "name": "obsidian-move-file",
+  "version": "1.0.0",
+  "description": "A plugin to help move referenced files in Obsidian notes",
+  "main": "main.js",
+  "scripts": {
+    "dev": "obsidian-plugin dev",
+    "build": "obsidian-plugin build",
+    "lint": "eslint . --ext .ts"
+  },
+  "keywords": [
+    "obsidian",
+    "plugin",
+    "file management"
+  ],
+  "author": "Developer",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.0.0",
+    "obsidian": "^1.0.0",
+    "obsidian-plugin-cli": "^1.0.0",
+    "tslib": "^2.6.0",
+    "typescript": "^5.3.0"
+  }
+}

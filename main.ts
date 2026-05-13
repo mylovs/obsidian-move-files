@@ -74,18 +74,20 @@ class MoveFileModal extends Modal {
    * 提取所有markdown链接和wiki链接引用的文件，按扩展名分组
    */
   private async analyzeReferencedFiles(): Promise<void> {
-    // 读取当前文件内容
     const content = await this.app.vault.read(this.sourceFile);
-    // 提取所有引用路径
     const references = this.extractReferences(content);
     
-    // 按扩展名分组存储
     const extensionMap = new Map<string, ReferencedFile[]>();
+    const sourceFolder = this.sourceFile.parent?.path || '';
     
-    // 遍历所有引用，验证文件是否存在并分组
     for (const ref of references) {
-      const file = this.app.vault.getAbstractFileByPath(ref);
-      // 仅处理实际存在的文件
+      let file = this.app.vault.getAbstractFileByPath(ref);
+      
+      if (!(file instanceof TFile) && sourceFolder) {
+        const relativePath = `${sourceFolder}/${ref}`;
+        file = this.app.vault.getAbstractFileByPath(relativePath);
+      }
+      
       if (file instanceof TFile) {
         const ext = file.extension.toLowerCase();
         if (!extensionMap.has(ext)) {
@@ -100,12 +102,11 @@ class MoveFileModal extends Modal {
       }
     }
 
-    // 转换为分组数组并按扩展名排序
     this.groups = Array.from(extensionMap.entries())
       .map(([ext, files]) => ({
         extension: ext,
         files: files,
-        selected: true  // 默认选中所有分组
+        selected: true
       }))
       .sort((a, b) => a.extension.localeCompare(b.extension));
   }

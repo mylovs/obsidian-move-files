@@ -24,166 +24,132 @@ __export(main_exports, {
 });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
+var STORAGE_KEY = "obsidian-move-file-history";
+var Storage = {
+  getHistory() {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    return stored ? JSON.parse(stored) : [];
+  },
+  saveHistory(records) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+  },
+  addRecord(record) {
+    const history = this.getHistory();
+    history.push(record);
+    this.saveHistory(history);
+  },
+  removeByIndex(index) {
+    const history = this.getHistory();
+    history.splice(index, 1);
+    this.saveHistory(history);
+  },
+  removeByTimestamp(timestamp) {
+    const history = this.getHistory();
+    const filtered = history.filter((r) => r.timestamp !== timestamp);
+    this.saveHistory(filtered);
+  }
+};
+function formatTimestamp(timestamp) {
+  return new Date(timestamp).toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  });
+}
+function groupHistoryByTimestamp(history) {
+  const groups = /* @__PURE__ */ new Map();
+  for (const record of history) {
+    const existing = groups.get(record.timestamp);
+    groups.set(record.timestamp, existing ? [...existing, record] : [record]);
+  }
+  return Array.from(groups.entries()).map(([timestamp, records]) => ({ timestamp, records })).sort((a, b) => b.timestamp - a.timestamp);
+}
 var MoveFileModal = class extends import_obsidian.Modal {
-  // 成功提示消息
-  /**
-   * 构造函数
-   * @param app Obsidian应用实例
-   * @param file 当前打开的markdown文件
-   */
   constructor(app, file) {
     super(app);
-    this.sourceFile = file;
-    this.destinationPath = this.getDefaultDestinationPath();
     this.groups = [];
     this.errorMessage = "";
     this.successMessage = "";
+    this.moveSourceFile = false;
+    this.sourceFile = file;
+    this.destinationPath = this.getDefaultDestinationPath();
   }
-  /**
-   * 获取默认目标文件夹路径
-   * 默认在当前文件同目录下创建一个以当前文件名命名的文件夹
-   * @returns 默认目标路径
-   */
   getDefaultDestinationPath() {
     const fileName = this.sourceFile.basename;
     const parentFolder = this.sourceFile.parent?.path || "";
     return `${parentFolder}/${fileName}`;
   }
-  /**
-   * 分析当前markdown文件中的引用文件
-   * 提取所有markdown链接和wiki链接引用的文件，按扩展名分组
-   */
   async analyzeReferencedFiles() {
     const extensionMap = /* @__PURE__ */ new Map();
+    const addedPaths = /* @__PURE__ */ new Set();
+    const resolveAndAdd = (file) => {
+      if (addedPaths.has(file.path)) return;
+      addedPaths.add(file.path);
+      const ext = file.extension.toLowerCase();
+      const files = extensionMap.get(ext) || [];
+      files.push({
+        name: file.name,
+        path: file.path,
+        extension: ext,
+        exists: true,
+        selected: true
+      });
+      extensionMap.set(ext, files);
+    };
     const resolvedLinks = this.app.metadataCache.resolvedLinks[this.sourceFile.path] || {};
     for (const destPath of Object.keys(resolvedLinks)) {
       const file = this.app.vault.getAbstractFileByPath(destPath);
-      if (file instanceof import_obsidian.TFile) {
-        const ext = file.extension.toLowerCase();
-        if (!extensionMap.has(ext)) {
-          extensionMap.set(ext, []);
-        }
-        extensionMap.get(ext).push({
-          name: file.name,
-          path: file.path,
-          extension: ext,
-          exists: true,
-          selected: true
-        });
-      }
+      if (file instanceof import_obsidian.TFile) resolveAndAdd(file);
     }
     const fileCache = this.app.metadataCache.getFileCache(this.sourceFile);
     if (fileCache?.embeds) {
       for (const embed of fileCache.embeds) {
         const resolvedFile = this.app.metadataCache.getFirstLinkpathDest(embed.link, this.sourceFile.path);
-        if (resolvedFile instanceof import_obsidian.TFile) {
-          const ext = resolvedFile.extension.toLowerCase();
-          const existingFiles = extensionMap.get(ext) || [];
-          const alreadyExists = existingFiles.some((f) => f.path === resolvedFile.path);
-          if (!alreadyExists) {
-            if (!extensionMap.has(ext)) {
-              extensionMap.set(ext, []);
-            }
-            extensionMap.get(ext).push({
-              name: resolvedFile.name,
-              path: resolvedFile.path,
-              extension: ext,
-              exists: true,
-              selected: true
-            });
-          }
-        }
+        if (resolvedFile instanceof import_obsidian.TFile) resolveAndAdd(resolvedFile);
       }
     }
-    this.groups = Array.from(extensionMap.entries()).map(([ext, files]) => ({
-      extension: ext,
-      files,
-      selected: true
-    })).sort((a, b) => a.extension.localeCompare(b.extension));
+    this.groups = Array.from(extensionMap.entries()).map(([ext, files]) => ({ extension: ext, files, selected: true })).sort((a, b) => a.extension.localeCompare(b.extension));
   }
-  /**
-   * 获取所有被选中的文件列表
-   * @returns 选中的引用文件数组
-   */
   getSelectedFiles() {
-    const selected = [];
-    for (const group of this.groups) {
-      for (const file of group.files) {
-        if (file.selected) {
-          selected.push(file);
-        }
-      }
-    }
-    return selected;
+    return this.groups.flatMap((group) => group.files.filter((file) => file.selected));
   }
-  /**
-   * 切换整个扩展名分组的选中状态
-   * @param groupExtension 扩展名（不含点号）
-   */
   toggleGroup(groupExtension) {
     const group = this.groups.find((g) => g.extension === groupExtension);
-    if (group) {
-      const newValue = !group.selected;
-      group.selected = newValue;
-      for (const file of group.files) {
-        file.selected = newValue;
-      }
-    }
+    if (!group) return;
+    const newValue = !group.selected;
+    group.selected = newValue;
+    group.files.forEach((file) => file.selected = newValue);
     this.render();
   }
-  /**
-   * 切换单个文件的选中状态（影响分组的全选状态）
-   * @param groupExtension 文件所属扩展名
-   * @param fileName 文件名
-   */
   toggleFile(groupExtension, fileName) {
     const group = this.groups.find((g) => g.extension === groupExtension);
-    if (group) {
-      const file = group.files.find((f) => f.name === fileName);
-      if (file) {
-        file.selected = !file.selected;
-        const allSelected = group.files.every((f) => f.selected);
-        const noneSelected = group.files.every((f) => !f.selected);
-        if (allSelected) {
-          group.selected = true;
-        } else if (noneSelected) {
-          group.selected = false;
-        } else {
-          group.selected = void 0;
-        }
-      }
-    }
+    if (!group) return;
+    const file = group.files.find((f) => f.name === fileName);
+    if (!file) return;
+    file.selected = !file.selected;
+    const allSelected = group.files.every((f) => f.selected);
+    const noneSelected = group.files.every((f) => !f.selected);
+    group.selected = allSelected ? true : noneSelected ? false : void 0;
     this.render();
   }
-  /**
-   * 检查单个文件是否被选中
-   * @param groupExtension 文件所属扩展名
-   * @param fileName 文件名
-   * @returns 是否选中
-   */
   isFileSelected(groupExtension, fileName) {
     const group = this.groups.find((g) => g.extension === groupExtension);
     if (!group) return false;
     const file = group.files.find((f) => f.name === fileName);
     return file?.selected ?? false;
   }
-  /**
-   * 如果目标文件夹不存在则创建
-   * @param path 文件夹路径
-   */
   async createFolderIfNotExists(path) {
     const folder = this.app.vault.getAbstractFileByPath(path);
     if (!folder) {
       await this.app.vault.createFolder(path);
     }
   }
-  /**
-   * 执行文件移动操作
-   * 包含验证、创建文件夹、移动文件、更新链接、记录历史等步骤
-   */
   async moveFiles() {
     const selectedFiles = this.getSelectedFiles();
-    if (selectedFiles.length === 0) {
+    if (selectedFiles.length === 0 && !this.moveSourceFile) {
       this.errorMessage = "Please select at least one file to move.";
       this.successMessage = "";
       this.render();
@@ -197,76 +163,69 @@ var MoveFileModal = class extends import_obsidian.Modal {
     }
     try {
       await this.createFolderIfNotExists(this.destinationPath);
-      const movedFiles = [];
-      const timestamps = Date.now();
+      const timestamp = Date.now();
+      let movedCount = 0;
       for (const refFile of selectedFiles) {
-        const sourceFile = this.app.vault.getAbstractFileByPath(refFile.path);
-        if (sourceFile instanceof import_obsidian.TFile) {
-          const destPath = `${this.destinationPath}/${sourceFile.name}`;
-          if (sourceFile.path === destPath) {
-            continue;
+        const file = this.app.vault.getAbstractFileByPath(refFile.path);
+        if (!(file instanceof import_obsidian.TFile)) continue;
+        const destPath = `${this.destinationPath}/${file.name}`;
+        if (file.path === destPath) continue;
+        const existingFile = this.app.vault.getAbstractFileByPath(destPath);
+        if (existingFile) continue;
+        const sourceFilePath = file.path;
+        await this.app.fileManager.renameFile(file, destPath);
+        Storage.addRecord({
+          sourcePath: sourceFilePath,
+          destPath,
+          timestamp,
+          operation: "move"
+        });
+        movedCount++;
+      }
+      if (this.moveSourceFile) {
+        const sourceDestPath = `${this.destinationPath}/${this.sourceFile.name}`;
+        if (this.sourceFile.path !== sourceDestPath) {
+          const existingFile = this.app.vault.getAbstractFileByPath(sourceDestPath);
+          if (!existingFile) {
+            const sourceFilePath = this.sourceFile.path;
+            await this.app.fileManager.renameFile(this.sourceFile, sourceDestPath);
+            Storage.addRecord({
+              sourcePath: sourceFilePath,
+              destPath: sourceDestPath,
+              timestamp,
+              operation: "move"
+            });
+            movedCount++;
           }
-          const existingFile = this.app.vault.getAbstractFileByPath(destPath);
-          if (existingFile) {
-            continue;
-          }
-          const sourceFilePath = sourceFile.path;
-          await this.app.fileManager.renameFile(sourceFile, destPath);
-          movedFiles.push({
-            sourcePath: sourceFilePath,
-            destPath,
-            id: timestamps,
-            operation: "move"
-          });
         }
       }
-      this.saveMoveHistory(movedFiles);
-      this.successMessage = `Successfully moved ${selectedFiles.length} file(s) to ${this.destinationPath}`;
+      this.successMessage = `Successfully moved ${movedCount} file(s) to ${this.destinationPath}`;
       this.errorMessage = "";
       new import_obsidian.Notice(this.successMessage);
-      setTimeout(() => {
-        this.close();
-      }, 2e3);
+      setTimeout(() => this.close(), 2e3);
     } catch (error) {
       this.errorMessage = `Error moving files: ${error instanceof Error ? error.message : "Unknown error"}`;
       this.successMessage = "";
     }
     this.render();
   }
-  /**
-   * 保存移动历史到localStorage
-   * 最多保存最近10条记录
-   * @param records 移动记录数组
-   */
-  saveMoveHistory(records) {
-    const history = this.getMoveHistory();
-    history.unshift(...records);
-    const trimmedHistory = history.slice(0, 10);
-    localStorage.setItem("obsidian-move-file-history", JSON.stringify(trimmedHistory));
-  }
-  /**
-   * 从localStorage获取移动历史记录
-   * @returns 移动记录数组
-   */
-  getMoveHistory() {
-    const stored = localStorage.getItem("obsidian-move-file-history");
-    return stored ? JSON.parse(stored) : [];
-  }
-  /**
-   * 渲染模态框界面
-   * 包含头部、源文件信息、分组列表、目标路径输入、预览和操作按钮
-   */
   render() {
     const contentEl = this.contentEl;
     contentEl.empty();
     contentEl.addClass("move-file-modal");
     contentEl.createDiv({ cls: "move-file-header" }, (header) => {
       header.createDiv({ cls: "move-file-title", text: "Move Referenced Files" });
-      header.createEl("span", { cls: "move-file-close", text: "\xD7" }).addEventListener("click", () => this.close());
     });
     contentEl.createDiv({ cls: "move-file-source" }, (source) => {
       source.createDiv({ cls: "move-file-source-label", text: "Source File:" });
       source.createDiv({ cls: "move-file-source-value", text: this.sourceFile.path });
+      const sourceCheckbox = source.createDiv({ cls: "move-file-source-checkbox" });
+      const checkbox = sourceCheckbox.createEl("input", { type: "checkbox", cls: "move-file-source-input" });
+      checkbox.checked = this.moveSourceFile;
+      checkbox.addEventListener("change", (e) => {
+        this.moveSourceFile = e.target.checked;
+      });
+      sourceCheckbox.createDiv({ cls: "move-file-source-label-text", text: "Move this file" });
     });
     if (this.errorMessage) {
       contentEl.createDiv({ cls: "move-file-error", text: this.errorMessage });
@@ -290,8 +249,9 @@ var MoveFileModal = class extends import_obsidian.Modal {
             const checkbox = item.createEl("input", { type: "checkbox", cls: "move-file-item-checkbox" });
             checkbox.checked = this.isFileSelected(group.extension, file.name);
             checkbox.addEventListener("change", () => this.toggleFile(group.extension, file.name));
-            item.createDiv({ cls: "move-file-item-name", text: file.name });
-            item.createDiv({ cls: "move-file-item-path", text: file.path });
+            const info = item.createDiv({ cls: "move-file-item-info" });
+            info.createDiv({ cls: "move-file-item-name", text: file.name });
+            info.createDiv({ cls: "move-file-item-path", text: file.path });
           });
         }
       }
@@ -321,46 +281,112 @@ var MoveFileModal = class extends import_obsidian.Modal {
       moveBtn.addEventListener("click", () => this.moveFiles());
     });
   }
-  /**
-   * 模态框打开时执行的初始化操作
-   */
   async onOpen() {
     await this.analyzeReferencedFiles();
     this.render();
   }
-  /**
-   * 模态框关闭时执行的清理操作
-   */
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+var UndoMoveModal = class extends import_obsidian.Modal {
+  constructor(app) {
+    super(app);
+    this.history = Storage.getHistory();
+  }
+  async undoMoveByTimestamp(timestamp) {
+    const recordsToUndo = this.history.filter((r) => r.timestamp === timestamp);
+    let successCount = 0;
+    let failCount = 0;
+    for (const record of recordsToUndo) {
+      const destFile = this.app.vault.getAbstractFileByPath(record.destPath);
+      if (!(destFile instanceof import_obsidian.TFile)) {
+        failCount++;
+        continue;
+      }
+      try {
+        await this.app.fileManager.renameFile(destFile, record.sourcePath);
+        successCount++;
+      } catch {
+        failCount++;
+      }
+    }
+    Storage.removeByTimestamp(timestamp);
+    this.history = Storage.getHistory();
+    this.render();
+    if (failCount === 0) {
+      new import_obsidian.Notice(`Successfully undid ${successCount} file(s)`);
+    } else if (successCount === 0) {
+      new import_obsidian.Notice(`Failed to undo ${failCount} file(s)`);
+    } else {
+      new import_obsidian.Notice(`Undid ${successCount} file(s), ${failCount} failed`);
+    }
+  }
+  clearHistory() {
+    Storage.saveHistory([]);
+    this.history = [];
+    this.render();
+    new import_obsidian.Notice("History cleared");
+  }
+  onOpen() {
+    this.render();
+  }
+  render() {
+    const contentEl = this.contentEl;
+    contentEl.empty();
+    contentEl.addClass("undo-move-modal");
+    contentEl.createDiv({ cls: "undo-move-header" }, (header) => {
+      header.createDiv({ cls: "undo-move-title", text: "Undo Move History" });
+    });
+    if (this.history.length === 0) {
+      contentEl.createDiv({ cls: "undo-move-empty", text: "No move history" });
+      return;
+    }
+    const historyGroups = groupHistoryByTimestamp(this.history);
+    const historyList = contentEl.createDiv({ cls: "undo-move-history" });
+    for (const group of historyGroups) {
+      const groupEl = historyList.createDiv({ cls: "undo-move-group" });
+      groupEl.createDiv({ cls: "undo-move-group-header" }, (header) => {
+        header.createDiv({ cls: "undo-move-timestamp", text: formatTimestamp(group.timestamp) });
+        header.createDiv({ cls: "undo-move-group-count", text: `${group.records.length} file(s)` });
+        const undoBtn = header.createEl("button", { cls: "undo-move-btn", text: "Undo All" });
+        undoBtn.addEventListener("click", () => this.undoMoveByTimestamp(group.timestamp));
+      });
+      const filesList = groupEl.createDiv({ cls: "undo-move-files" });
+      for (const record of group.records) {
+        const fileItem = filesList.createDiv({ cls: "undo-move-file-item" });
+        const sourcePath = fileItem.createDiv({ cls: "undo-move-path" });
+        sourcePath.createDiv({ cls: "undo-move-source", text: record.sourcePath });
+        fileItem.createDiv({ cls: "undo-move-arrow", text: "\u2192" });
+        const destPath = fileItem.createDiv({ cls: "undo-move-path" });
+        destPath.createDiv({ cls: "undo-move-dest", text: record.destPath });
+      }
+    }
+    const footer = contentEl.createDiv({ cls: "undo-move-footer" });
+    const clearBtn = footer.createEl("button", { cls: "undo-move-clear-btn", text: "Clear History" });
+    clearBtn.addEventListener("click", () => this.clearHistory());
+    footer.createDiv({ cls: "undo-move-count", text: `${historyGroups.length} operation(s), ${this.history.length} file(s)` });
+  }
   onClose() {
     this.contentEl.empty();
   }
 };
 var MoveFilePlugin = class extends import_obsidian.Plugin {
-  /**
-   * 插件加载时执行
-   * 注册命令和ribbon图标
-   */
   async onload() {
     this.addCommand({
       id: "move-referenced-files",
       name: "Move Referenced Files",
       editorCheckCallback: (checking, editor, view) => {
-        if (checking) {
-          return !!view.file;
-        }
-        if (view.file) {
-          new MoveFileModal(this.app, view.file).open();
-        }
+        if (checking) return !!view.file;
+        if (view.file) new MoveFileModal(this.app, view.file).open();
       }
     });
     this.addCommand({
-      id: "undo-move-referenced-files",
-      name: "Undo Last Move",
+      id: "undo-move-history",
+      name: "Move History (Undo)",
       checkCallback: (checking) => {
-        if (checking) {
-          return this.hasMoveHistory();
-        }
-        this.undoLastMove();
+        if (checking) return true;
+        new UndoMoveModal(this.app).open();
       }
     });
     this.addRibbonIcon("folder-up", "Move Referenced Files", (evt) => {
@@ -372,66 +398,6 @@ var MoveFilePlugin = class extends import_obsidian.Plugin {
       }
     });
   }
-  hasMoveHistory() {
-    const stored = localStorage.getItem("obsidian-move-file-history");
-    return stored && JSON.parse(stored).length > 0;
-  }
-  async undoLastMove() {
-    const movehistory = this.getMoveHistory();
-    if (movehistory.length === 0) {
-      new import_obsidian.Notice("No move history to undo.");
-      return;
-    }
-    const lastId = movehistory[movehistory.length - 1].id;
-    const lastMoveHistory = movehistory.find((record) => record.id === lastId);
-    if (!lastMoveHistory) {
-      new import_obsidian.Notice("No move history with id: " + lastId);
-      return;
-    }
-    try {
-      await this.createFolderIfNotExists(lastMoveHistory.destPath);
-      const movedFiles = [];
-      const timestamps = Date.now();
-      for (const refFile of lastMoveHistory) {
-        const sourceFile = this.app.vault.getAbstractFileByPath(refFile.destPath);
-        if (sourceFile instanceof import_obsidian.TFile) {
-          const destPath = `${refFile.sourcePath}/${sourceFile.name}`;
-          if (sourceFile.path === destPath) {
-            continue;
-          }
-          const existingFile = this.app.vault.getAbstractFileByPath(destPath);
-          if (existingFile) {
-            continue;
-          }
-          const sourceFilePath = sourceFile.path;
-          await this.app.fileManager.renameFile(sourceFile, destPath);
-          movedFiles.push({
-            sourcePath: sourceFilePath,
-            destPath,
-            id: timestamps,
-            operation: "undo"
-          });
-        }
-      }
-      this.saveMoveHistory(movedFiles);
-    } catch (error) {
-      new import_obsidian.Notice(`Error undoing move: ${error instanceof Error ? error.message : "Unknown error"}`);
-    }
-  }
-  getMoveHistory() {
-    const stored = localStorage.getItem("obsidian-move-file-history");
-    return stored ? JSON.parse(stored) : [];
-  }
-  saveMoveHistory(records) {
-    const history = this.getMoveHistory();
-    history.unshift(...records);
-    const trimmedHistory = history.slice(0, 10);
-    localStorage.setItem("obsidian-move-file-history", JSON.stringify(trimmedHistory));
-  }
-  /**
-   * 插件卸载时执行
-   * 清理资源（当前无特殊清理需求）
-   */
   onunload() {
   }
 };

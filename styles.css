@@ -1,7 +1,18 @@
 
 .move-file-modal {
-  width: 600px;
+  width: fit-content;      /* 自适应内容宽度 */
+  min-width: 500px;        /* 设置最小宽度 */
+  max-width: 90vw;         /* 设置最大宽度（视口宽度的90%） */
   max-height: 70vh;
+  overflow-x: hidden;
+}
+
+.undo-move-modal {
+  width: fit-content;
+  min-width: 500px;
+  max-width: 90vw;
+  max-height: 70vh;
+  overflow-x: hidden;
 }
 
 .move-file-modal .modal-content {
@@ -41,6 +52,23 @@
   font-size: 12px;
   color: var(--text-muted);
   margin-bottom: 4px;
+}
+
+.move-file-source-checkbox {
+  display: flex;
+  align-items: center;
+  margin-top: 8px;
+  gap: 4px;
+}
+
+.move-file-source-input {
+  margin: 0;
+}
+
+.move-file-source-label-text {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-weight: 500;
 }
 
 .move-file-source-value {
@@ -217,4 +245,135 @@
   color: #22c55e;
   font-size: 13px;
   margin-bottom: 16px;
+}
+
+
+
+.undo-move-modal .modal-content {
+  padding: 16px;
+}
+
+.undo-move-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.undo-move-title {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.undo-move-close {
+  cursor: pointer;
+  padding: 4px;
+}
+
+.undo-move-close:hover {
+  background-color: var(--background-modifier-hover);
+  border-radius: 4px;
+}
+
+.undo-move-empty {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 32px;
+}
+
+.undo-move-history {
+  max-height: 400px;
+  overflow-y: auto;
+  margin-bottom: 16px;
+}
+
+.undo-move-group {
+  margin-bottom: 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.undo-move-group-header {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  background-color: var(--background-secondary);
+  gap: 12px;
+}
+
+.undo-move-timestamp {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.undo-move-group-count {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.undo-move-btn {
+  margin-left: auto;
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+  border: none;
+  background-color: var(--interactive-accent);
+  color: white;
+}
+
+.undo-move-btn:hover {
+  background-color: var(--interactive-accent-hover);
+}
+
+.undo-move-files {
+  padding: 8px 12px;
+  background-color: var(--background-primary);
+}
+
+.undo-move-file-item {
+  display: flex;
+  align-items: center;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-family: monospace;
+  gap: 8px;
+}
+
+.undo-move-source {
+  color: var(--text-muted);
+}
+
+.undo-move-arrow {
+  color: var(--interactive-accent);
+}
+
+.undo-move-dest {
+  color: var(--text-normal);
+}
+
+.undo-move-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.undo-move-clear-btn {
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+  border: none;
+  background-color: var(--background-secondary);
+  color: var(--text-normal);
+}
+
+.undo-move-clear-btn:hover {
+  background-color: var(--background-modifier-hover);
+}
+
+.undo-move-count {
+  font-size: 12px;
+  color: var(--text-muted);
 }

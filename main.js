@@ -73,6 +73,7 @@ var MoveFileModal = class extends import_obsidian.Modal {
     this.groups = [];
     this.errorMessage = "";
     this.successMessage = "";
+    this.moveSourceFile = false;
     this.sourceFile = file;
     this.destinationPath = this.getDefaultDestinationPath();
   }
@@ -148,7 +149,7 @@ var MoveFileModal = class extends import_obsidian.Modal {
   }
   async moveFiles() {
     const selectedFiles = this.getSelectedFiles();
-    if (selectedFiles.length === 0) {
+    if (selectedFiles.length === 0 && !this.moveSourceFile) {
       this.errorMessage = "Please select at least one file to move.";
       this.successMessage = "";
       this.render();
@@ -165,14 +166,14 @@ var MoveFileModal = class extends import_obsidian.Modal {
       const timestamp = Date.now();
       let movedCount = 0;
       for (const refFile of selectedFiles) {
-        const sourceFile = this.app.vault.getAbstractFileByPath(refFile.path);
-        if (!(sourceFile instanceof import_obsidian.TFile)) continue;
-        const destPath = `${this.destinationPath}/${sourceFile.name}`;
-        if (sourceFile.path === destPath) continue;
+        const file = this.app.vault.getAbstractFileByPath(refFile.path);
+        if (!(file instanceof import_obsidian.TFile)) continue;
+        const destPath = `${this.destinationPath}/${file.name}`;
+        if (file.path === destPath) continue;
         const existingFile = this.app.vault.getAbstractFileByPath(destPath);
         if (existingFile) continue;
-        const sourceFilePath = sourceFile.path;
-        await this.app.fileManager.renameFile(sourceFile, destPath);
+        const sourceFilePath = file.path;
+        await this.app.fileManager.renameFile(file, destPath);
         Storage.addRecord({
           sourcePath: sourceFilePath,
           destPath,
@@ -180,6 +181,23 @@ var MoveFileModal = class extends import_obsidian.Modal {
           operation: "move"
         });
         movedCount++;
+      }
+      if (this.moveSourceFile) {
+        const sourceDestPath = `${this.destinationPath}/${this.sourceFile.name}`;
+        if (this.sourceFile.path !== sourceDestPath) {
+          const existingFile = this.app.vault.getAbstractFileByPath(sourceDestPath);
+          if (!existingFile) {
+            const sourceFilePath = this.sourceFile.path;
+            await this.app.fileManager.renameFile(this.sourceFile, sourceDestPath);
+            Storage.addRecord({
+              sourcePath: sourceFilePath,
+              destPath: sourceDestPath,
+              timestamp,
+              operation: "move"
+            });
+            movedCount++;
+          }
+        }
       }
       this.successMessage = `Successfully moved ${movedCount} file(s) to ${this.destinationPath}`;
       this.errorMessage = "";
@@ -201,6 +219,13 @@ var MoveFileModal = class extends import_obsidian.Modal {
     contentEl.createDiv({ cls: "move-file-source" }, (source) => {
       source.createDiv({ cls: "move-file-source-label", text: "Source File:" });
       source.createDiv({ cls: "move-file-source-value", text: this.sourceFile.path });
+      const sourceCheckbox = source.createDiv({ cls: "move-file-source-checkbox" });
+      const checkbox = sourceCheckbox.createEl("input", { type: "checkbox", cls: "move-file-source-input" });
+      checkbox.checked = this.moveSourceFile;
+      checkbox.addEventListener("change", (e) => {
+        this.moveSourceFile = e.target.checked;
+      });
+      sourceCheckbox.createDiv({ cls: "move-file-source-label-text", text: "Move this file" });
     });
     if (this.errorMessage) {
       contentEl.createDiv({ cls: "move-file-error", text: this.errorMessage });

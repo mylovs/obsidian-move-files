@@ -87,6 +87,7 @@ class MoveFileModal extends Modal {
   private destinationPath: string;
   private errorMessage = '';
   private successMessage = '';
+  private moveSourceFile = false;
 
   constructor(app: App, file: TFile) {
     super(app);
@@ -184,7 +185,7 @@ class MoveFileModal extends Modal {
   private async moveFiles(): Promise<void> {
     const selectedFiles = this.getSelectedFiles();
 
-    if (selectedFiles.length === 0) {
+    if (selectedFiles.length === 0 && !this.moveSourceFile) {
       this.errorMessage = 'Please select at least one file to move.';
       this.successMessage = '';
       this.render();
@@ -204,17 +205,17 @@ class MoveFileModal extends Modal {
       let movedCount = 0;
 
       for (const refFile of selectedFiles) {
-        const sourceFile = this.app.vault.getAbstractFileByPath(refFile.path);
-        if (!(sourceFile instanceof TFile)) continue;
+        const file = this.app.vault.getAbstractFileByPath(refFile.path);
+        if (!(file instanceof TFile)) continue;
 
-        const destPath = `${this.destinationPath}/${sourceFile.name}`;
-        if (sourceFile.path === destPath) continue;
+        const destPath = `${this.destinationPath}/${file.name}`;
+        if (file.path === destPath) continue;
         
         const existingFile = this.app.vault.getAbstractFileByPath(destPath);
         if (existingFile) continue;
 
-        const sourceFilePath = sourceFile.path;
-        await this.app.fileManager.renameFile(sourceFile, destPath);
+        const sourceFilePath = file.path;
+        await this.app.fileManager.renameFile(file, destPath);
 
         Storage.addRecord({
           sourcePath: sourceFilePath,
@@ -223,6 +224,25 @@ class MoveFileModal extends Modal {
           operation: 'move'
         });
         movedCount++;
+      }
+
+      if (this.moveSourceFile) {
+        const sourceDestPath = `${this.destinationPath}/${this.sourceFile.name}`;
+        if (this.sourceFile.path !== sourceDestPath) {
+          const existingFile = this.app.vault.getAbstractFileByPath(sourceDestPath);
+          if (!existingFile) {
+            const sourceFilePath = this.sourceFile.path;
+            await this.app.fileManager.renameFile(this.sourceFile, sourceDestPath);
+            
+            Storage.addRecord({
+              sourcePath: sourceFilePath,
+              destPath: sourceDestPath,
+              timestamp,
+              operation: 'move'
+            });
+            movedCount++;
+          }
+        }
       }
 
       this.successMessage = `Successfully moved ${movedCount} file(s) to ${this.destinationPath}`;
@@ -251,6 +271,14 @@ class MoveFileModal extends Modal {
     contentEl.createDiv({ cls: 'move-file-source' }, source => {
       source.createDiv({ cls: 'move-file-source-label', text: 'Source File:' });
       source.createDiv({ cls: 'move-file-source-value', text: this.sourceFile.path });
+      
+      const sourceCheckbox = source.createDiv({ cls: 'move-file-source-checkbox' });
+      const checkbox = sourceCheckbox.createEl('input', { type: 'checkbox', cls: 'move-file-source-input' });
+      checkbox.checked = this.moveSourceFile;
+      checkbox.addEventListener('change', (e) => {
+        this.moveSourceFile = (e.target as HTMLInputElement).checked;
+      });
+      sourceCheckbox.createDiv({ cls: 'move-file-source-label-text', text: 'Move this file' });
     });
 
     if (this.errorMessage) {

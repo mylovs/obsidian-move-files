@@ -54,6 +54,23 @@
   margin-bottom: 4px;
 }
 
+.move-file-source-checkbox {
+  display: flex;
+  align-items: center;
+  margin-top: 8px;
+  gap: 4px;
+}
+
+.move-file-source-input {
+  margin: 0;
+}
+
+.move-file-source-label-text {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
 .move-file-source-value {
   font-size: 14px;
   font-family: monospace;

@@ -1,6 +1,6 @@
 {
-  "name": "obsidian-move-file",
-  "version": "1.0.0",
+  "name": "obsidian-move-files",
+  "version": "1.0.1",
   "description": "A plugin to help move referenced files in Obsidian notes",
   "main": "main.js",
   "scripts": {

@@ -25,18 +25,30 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
 var STORAGE_KEY = "obsidian-move-file-history";
-function getMoveHistory() {
-  const stored = localStorage.getItem(STORAGE_KEY);
-  return stored ? JSON.parse(stored) : [];
-}
-function saveMoveHistory(records) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
-}
-function addMoveHistory(record) {
-  const history = getMoveHistory();
-  history.push(record);
-  saveMoveHistory(history);
-}
+var Storage = {
+  getHistory() {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    return stored ? JSON.parse(stored) : [];
+  },
+  saveHistory(records) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+  },
+  addRecord(record) {
+    const history = this.getHistory();
+    history.push(record);
+    this.saveHistory(history);
+  },
+  removeByIndex(index) {
+    const history = this.getHistory();
+    history.splice(index, 1);
+    this.saveHistory(history);
+  },
+  removeByTimestamp(timestamp) {
+    const history = this.getHistory();
+    const filtered = history.filter((r) => r.timestamp !== timestamp);
+    this.saveHistory(filtered);
+  }
+};
 function formatTimestamp(timestamp) {
   return new Date(timestamp).toLocaleString("zh-CN", {
     year: "numeric",
@@ -50,10 +62,8 @@ function formatTimestamp(timestamp) {
 function groupHistoryByTimestamp(history) {
   const groups = /* @__PURE__ */ new Map();
   for (const record of history) {
-    if (!groups.has(record.timestamp)) {
-      groups.set(record.timestamp, []);
-    }
-    groups.get(record.timestamp).push(record);
+    const existing = groups.get(record.timestamp);
+    groups.set(record.timestamp, existing ? [...existing, record] : [record]);
   }
   return Array.from(groups.entries()).map(([timestamp, records]) => ({ timestamp, records })).sort((a, b) => b.timestamp - a.timestamp);
 }
@@ -73,64 +83,55 @@ var MoveFileModal = class extends import_obsidian.Modal {
   }
   async analyzeReferencedFiles() {
     const extensionMap = /* @__PURE__ */ new Map();
+    const addedPaths = /* @__PURE__ */ new Set();
+    const resolveAndAdd = (file) => {
+      if (addedPaths.has(file.path)) return;
+      addedPaths.add(file.path);
+      const ext = file.extension.toLowerCase();
+      const files = extensionMap.get(ext) || [];
+      files.push({
+        name: file.name,
+        path: file.path,
+        extension: ext,
+        exists: true,
+        selected: true
+      });
+      extensionMap.set(ext, files);
+    };
     const resolvedLinks = this.app.metadataCache.resolvedLinks[this.sourceFile.path] || {};
     for (const destPath of Object.keys(resolvedLinks)) {
       const file = this.app.vault.getAbstractFileByPath(destPath);
-      if (file instanceof import_obsidian.TFile) {
-        this.addToExtensionMap(extensionMap, file);
-      }
+      if (file instanceof import_obsidian.TFile) resolveAndAdd(file);
     }
     const fileCache = this.app.metadataCache.getFileCache(this.sourceFile);
     if (fileCache?.embeds) {
       for (const embed of fileCache.embeds) {
         const resolvedFile = this.app.metadataCache.getFirstLinkpathDest(embed.link, this.sourceFile.path);
-        if (resolvedFile instanceof import_obsidian.TFile) {
-          const ext = resolvedFile.extension.toLowerCase();
-          const existingFiles = extensionMap.get(ext) || [];
-          if (!existingFiles.some((f) => f.path === resolvedFile.path)) {
-            this.addToExtensionMap(extensionMap, resolvedFile);
-          }
-        }
+        if (resolvedFile instanceof import_obsidian.TFile) resolveAndAdd(resolvedFile);
       }
     }
     this.groups = Array.from(extensionMap.entries()).map(([ext, files]) => ({ extension: ext, files, selected: true })).sort((a, b) => a.extension.localeCompare(b.extension));
-  }
-  addToExtensionMap(map, file) {
-    const ext = file.extension.toLowerCase();
-    if (!map.has(ext)) {
-      map.set(ext, []);
-    }
-    map.get(ext).push({
-      name: file.name,
-      path: file.path,
-      extension: ext,
-      exists: true,
-      selected: true
-    });
   }
   getSelectedFiles() {
     return this.groups.flatMap((group) => group.files.filter((file) => file.selected));
   }
   toggleGroup(groupExtension) {
     const group = this.groups.find((g) => g.extension === groupExtension);
-    if (group) {
-      const newValue = !group.selected;
-      group.selected = newValue;
-      group.files.forEach((file) => file.selected = newValue);
-    }
+    if (!group) return;
+    const newValue = !group.selected;
+    group.selected = newValue;
+    group.files.forEach((file) => file.selected = newValue);
     this.render();
   }
   toggleFile(groupExtension, fileName) {
     const group = this.groups.find((g) => g.extension === groupExtension);
-    if (group) {
-      const file = group.files.find((f) => f.name === fileName);
-      if (file) {
-        file.selected = !file.selected;
-        const allSelected = group.files.every((f) => f.selected);
-        const noneSelected = group.files.every((f) => !f.selected);
-        group.selected = allSelected ? true : noneSelected ? false : void 0;
-      }
-    }
+    if (!group) return;
+    const file = group.files.find((f) => f.name === fileName);
+    if (!file) return;
+    file.selected = !file.selected;
+    const allSelected = group.files.every((f) => f.selected);
+    const noneSelected = group.files.every((f) => !f.selected);
+    group.selected = allSelected ? true : noneSelected ? false : void 0;
     this.render();
   }
   isFileSelected(groupExtension, fileName) {
@@ -162,6 +163,7 @@ var MoveFileModal = class extends import_obsidian.Modal {
     try {
       await this.createFolderIfNotExists(this.destinationPath);
       const timestamp = Date.now();
+      let movedCount = 0;
       for (const refFile of selectedFiles) {
         const sourceFile = this.app.vault.getAbstractFileByPath(refFile.path);
         if (!(sourceFile instanceof import_obsidian.TFile)) continue;
@@ -171,14 +173,15 @@ var MoveFileModal = class extends import_obsidian.Modal {
         if (existingFile) continue;
         const sourceFilePath = sourceFile.path;
         await this.app.fileManager.renameFile(sourceFile, destPath);
-        addMoveHistory({
+        Storage.addRecord({
           sourcePath: sourceFilePath,
           destPath,
           timestamp,
           operation: "move"
         });
+        movedCount++;
       }
-      this.successMessage = `Successfully moved ${selectedFiles.length} file(s) to ${this.destinationPath}`;
+      this.successMessage = `Successfully moved ${movedCount} file(s) to ${this.destinationPath}`;
       this.errorMessage = "";
       new import_obsidian.Notice(this.successMessage);
       setTimeout(() => this.close(), 2e3);
@@ -221,8 +224,9 @@ var MoveFileModal = class extends import_obsidian.Modal {
             const checkbox = item.createEl("input", { type: "checkbox", cls: "move-file-item-checkbox" });
             checkbox.checked = this.isFileSelected(group.extension, file.name);
             checkbox.addEventListener("change", () => this.toggleFile(group.extension, file.name));
-            item.createDiv({ cls: "move-file-item-name", text: file.name });
-            item.createDiv({ cls: "move-file-item-path", text: file.path });
+            const info = item.createDiv({ cls: "move-file-item-info" });
+            info.createDiv({ cls: "move-file-item-name", text: file.name });
+            info.createDiv({ cls: "move-file-item-path", text: file.path });
           });
         }
       }
@@ -260,15 +264,10 @@ var MoveFileModal = class extends import_obsidian.Modal {
     this.contentEl.empty();
   }
 };
-function removeMoveHistoryByTimestamp(timestamp) {
-  const history = getMoveHistory();
-  const filtered = history.filter((r) => r.timestamp !== timestamp);
-  saveMoveHistory(filtered);
-}
 var UndoMoveModal = class extends import_obsidian.Modal {
   constructor(app) {
     super(app);
-    this.history = getMoveHistory();
+    this.history = Storage.getHistory();
   }
   async undoMoveByTimestamp(timestamp) {
     const recordsToUndo = this.history.filter((r) => r.timestamp === timestamp);
@@ -287,8 +286,8 @@ var UndoMoveModal = class extends import_obsidian.Modal {
         failCount++;
       }
     }
-    removeMoveHistoryByTimestamp(timestamp);
-    this.history = getMoveHistory();
+    Storage.removeByTimestamp(timestamp);
+    this.history = Storage.getHistory();
     this.render();
     if (failCount === 0) {
       new import_obsidian.Notice(`Successfully undid ${successCount} file(s)`);
@@ -299,7 +298,7 @@ var UndoMoveModal = class extends import_obsidian.Modal {
     }
   }
   clearHistory() {
-    saveMoveHistory([]);
+    Storage.saveHistory([]);
     this.history = [];
     this.render();
     new import_obsidian.Notice("History cleared");
@@ -331,9 +330,11 @@ var UndoMoveModal = class extends import_obsidian.Modal {
       const filesList = groupEl.createDiv({ cls: "undo-move-files" });
       for (const record of group.records) {
         const fileItem = filesList.createDiv({ cls: "undo-move-file-item" });
-        fileItem.createDiv({ cls: "undo-move-source", text: record.sourcePath });
+        const sourcePath = fileItem.createDiv({ cls: "undo-move-path" });
+        sourcePath.createDiv({ cls: "undo-move-source", text: record.sourcePath });
         fileItem.createDiv({ cls: "undo-move-arrow", text: "\u2192" });
-        fileItem.createDiv({ cls: "undo-move-dest", text: record.destPath });
+        const destPath = fileItem.createDiv({ cls: "undo-move-path" });
+        destPath.createDiv({ cls: "undo-move-dest", text: record.destPath });
       }
     }
     const footer = contentEl.createDiv({ cls: "undo-move-footer" });
@@ -351,21 +352,15 @@ var MoveFilePlugin = class extends import_obsidian.Plugin {
       id: "move-referenced-files",
       name: "Move Referenced Files",
       editorCheckCallback: (checking, editor, view) => {
-        if (checking) {
-          return !!view.file;
-        }
-        if (view.file) {
-          new MoveFileModal(this.app, view.file).open();
-        }
+        if (checking) return !!view.file;
+        if (view.file) new MoveFileModal(this.app, view.file).open();
       }
     });
     this.addCommand({
       id: "undo-move-history",
       name: "Move History (Undo)",
       checkCallback: (checking) => {
-        if (checking) {
-          return true;
-        }
+        if (checking) return true;
         new UndoMoveModal(this.app).open();
       }
     });

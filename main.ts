@@ -23,26 +23,39 @@ interface ExtensionGroup {
   selected: boolean;
 }
 
-function getMoveHistory(): MoveFileRecord[] {
-  const stored = localStorage.getItem(STORAGE_KEY);
-  return stored ? JSON.parse(stored) : [];
+interface HistoryGroup {
+  timestamp: number;
+  records: MoveFileRecord[];
 }
 
-function saveMoveHistory(records: MoveFileRecord[]): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
-}
+const Storage = {
+  getHistory(): MoveFileRecord[] {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    return stored ? JSON.parse(stored) : [];
+  },
 
-function addMoveHistory(record: MoveFileRecord): void {
-  const history = getMoveHistory();
-  history.push(record);
-  saveMoveHistory(history);
-}
+  saveHistory(records: MoveFileRecord[]): void {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+  },
 
-function removeMoveHistory(index: number): void {
-  const history = getMoveHistory();
-  history.splice(index, 1);
-  saveMoveHistory(history);
-}
+  addRecord(record: MoveFileRecord): void {
+    const history = this.getHistory();
+    history.push(record);
+    this.saveHistory(history);
+  },
+
+  removeByIndex(index: number): void {
+    const history = this.getHistory();
+    history.splice(index, 1);
+    this.saveHistory(history);
+  },
+
+  removeByTimestamp(timestamp: number): void {
+    const history = this.getHistory();
+    const filtered = history.filter(r => r.timestamp !== timestamp);
+    this.saveHistory(filtered);
+  }
+};
 
 function formatTimestamp(timestamp: number): string {
   return new Date(timestamp).toLocaleString('zh-CN', {
@@ -55,19 +68,12 @@ function formatTimestamp(timestamp: number): string {
   });
 }
 
-interface HistoryGroup {
-  timestamp: number;
-  records: MoveFileRecord[];
-}
-
 function groupHistoryByTimestamp(history: MoveFileRecord[]): HistoryGroup[] {
   const groups = new Map<number, MoveFileRecord[]>();
   
   for (const record of history) {
-    if (!groups.has(record.timestamp)) {
-      groups.set(record.timestamp, []);
-    }
-    groups.get(record.timestamp)!.push(record);
+    const existing = groups.get(record.timestamp);
+    groups.set(record.timestamp, existing ? [...existing, record] : [record]);
   }
   
   return Array.from(groups.entries())
@@ -96,26 +102,35 @@ class MoveFileModal extends Modal {
 
   private async analyzeReferencedFiles(): Promise<void> {
     const extensionMap = new Map<string, ReferencedFile[]>();
+    const addedPaths = new Set<string>();
+
+    const resolveAndAdd = (file: TFile): void => {
+      if (addedPaths.has(file.path)) return;
+      addedPaths.add(file.path);
+      
+      const ext = file.extension.toLowerCase();
+      const files = extensionMap.get(ext) || [];
+      files.push({
+        name: file.name,
+        path: file.path,
+        extension: ext,
+        exists: true,
+        selected: true
+      });
+      extensionMap.set(ext, files);
+    };
 
     const resolvedLinks = this.app.metadataCache.resolvedLinks[this.sourceFile.path] || {};
     for (const destPath of Object.keys(resolvedLinks)) {
       const file = this.app.vault.getAbstractFileByPath(destPath);
-      if (file instanceof TFile) {
-        this.addToExtensionMap(extensionMap, file);
-      }
+      if (file instanceof TFile) resolveAndAdd(file);
     }
 
     const fileCache = this.app.metadataCache.getFileCache(this.sourceFile);
     if (fileCache?.embeds) {
       for (const embed of fileCache.embeds) {
         const resolvedFile = this.app.metadataCache.getFirstLinkpathDest(embed.link, this.sourceFile.path);
-        if (resolvedFile instanceof TFile) {
-          const ext = resolvedFile.extension.toLowerCase();
-          const existingFiles = extensionMap.get(ext) || [];
-          if (!existingFiles.some(f => f.path === resolvedFile.path)) {
-            this.addToExtensionMap(extensionMap, resolvedFile);
-          }
-        }
+        if (resolvedFile instanceof TFile) resolveAndAdd(resolvedFile);
       }
     }
 
@@ -124,45 +139,31 @@ class MoveFileModal extends Modal {
       .sort((a, b) => a.extension.localeCompare(b.extension));
   }
 
-  private addToExtensionMap(map: Map<string, ReferencedFile[]>, file: TFile): void {
-    const ext = file.extension.toLowerCase();
-    if (!map.has(ext)) {
-      map.set(ext, []);
-    }
-    map.get(ext)!.push({
-      name: file.name,
-      path: file.path,
-      extension: ext,
-      exists: true,
-      selected: true
-    });
-  }
-
   private getSelectedFiles(): ReferencedFile[] {
     return this.groups.flatMap(group => group.files.filter(file => file.selected));
   }
 
   private toggleGroup(groupExtension: string): void {
     const group = this.groups.find(g => g.extension === groupExtension);
-    if (group) {
-      const newValue = !group.selected;
-      group.selected = newValue;
-      group.files.forEach(file => file.selected = newValue);
-    }
+    if (!group) return;
+    
+    const newValue = !group.selected;
+    group.selected = newValue;
+    group.files.forEach(file => file.selected = newValue);
     this.render();
   }
 
   private toggleFile(groupExtension: string, fileName: string): void {
     const group = this.groups.find(g => g.extension === groupExtension);
-    if (group) {
-      const file = group.files.find(f => f.name === fileName);
-      if (file) {
-        file.selected = !file.selected;
-        const allSelected = group.files.every(f => f.selected);
-        const noneSelected = group.files.every(f => !f.selected);
-        group.selected = allSelected ? true : noneSelected ? false : undefined;
-      }
-    }
+    if (!group) return;
+    
+    const file = group.files.find(f => f.name === fileName);
+    if (!file) return;
+    
+    file.selected = !file.selected;
+    const allSelected = group.files.every(f => f.selected);
+    const noneSelected = group.files.every(f => !f.selected);
+    group.selected = allSelected ? true : noneSelected ? false : undefined;
     this.render();
   }
 
@@ -200,6 +201,7 @@ class MoveFileModal extends Modal {
     try {
       await this.createFolderIfNotExists(this.destinationPath);
       const timestamp = Date.now();
+      let movedCount = 0;
 
       for (const refFile of selectedFiles) {
         const sourceFile = this.app.vault.getAbstractFileByPath(refFile.path);
@@ -207,22 +209,23 @@ class MoveFileModal extends Modal {
 
         const destPath = `${this.destinationPath}/${sourceFile.name}`;
         if (sourceFile.path === destPath) continue;
-
+        
         const existingFile = this.app.vault.getAbstractFileByPath(destPath);
         if (existingFile) continue;
 
         const sourceFilePath = sourceFile.path;
         await this.app.fileManager.renameFile(sourceFile, destPath);
 
-        addMoveHistory({
+        Storage.addRecord({
           sourcePath: sourceFilePath,
           destPath,
           timestamp,
           operation: 'move'
         });
+        movedCount++;
       }
 
-      this.successMessage = `Successfully moved ${selectedFiles.length} file(s) to ${this.destinationPath}`;
+      this.successMessage = `Successfully moved ${movedCount} file(s) to ${this.destinationPath}`;
       this.errorMessage = '';
       new Notice(this.successMessage);
 
@@ -278,8 +281,9 @@ class MoveFileModal extends Modal {
             checkbox.checked = this.isFileSelected(group.extension, file.name);
             checkbox.addEventListener('change', () => this.toggleFile(group.extension, file.name));
 
-            item.createDiv({ cls: 'move-file-item-name', text: file.name });
-            item.createDiv({ cls: 'move-file-item-path', text: file.path });
+            const info = item.createDiv({ cls: 'move-file-item-info' });
+            info.createDiv({ cls: 'move-file-item-name', text: file.name });
+            info.createDiv({ cls: 'move-file-item-path', text: file.path });
           });
         }
       }
@@ -324,18 +328,12 @@ class MoveFileModal extends Modal {
   }
 }
 
-function removeMoveHistoryByTimestamp(timestamp: number): void {
-  const history = getMoveHistory();
-  const filtered = history.filter(r => r.timestamp !== timestamp);
-  saveMoveHistory(filtered);
-}
-
 class UndoMoveModal extends Modal {
   private history: MoveFileRecord[];
 
   constructor(app: App) {
     super(app);
-    this.history = getMoveHistory();
+    this.history = Storage.getHistory();
   }
 
   private async undoMoveByTimestamp(timestamp: number): Promise<void> {
@@ -359,8 +357,8 @@ class UndoMoveModal extends Modal {
       }
     }
 
-    removeMoveHistoryByTimestamp(timestamp);
-    this.history = getMoveHistory();
+    Storage.removeByTimestamp(timestamp);
+    this.history = Storage.getHistory();
     this.render();
 
     if (failCount === 0) {
@@ -373,7 +371,7 @@ class UndoMoveModal extends Modal {
   }
 
   private clearHistory(): void {
-    saveMoveHistory([]);
+    Storage.saveHistory([]);
     this.history = [];
     this.render();
     new Notice('History cleared');
@@ -415,9 +413,11 @@ class UndoMoveModal extends Modal {
       const filesList = groupEl.createDiv({ cls: 'undo-move-files' });
       for (const record of group.records) {
         const fileItem = filesList.createDiv({ cls: 'undo-move-file-item' });
-        fileItem.createDiv({ cls: 'undo-move-source', text: record.sourcePath });
+        const sourcePath = fileItem.createDiv({ cls: 'undo-move-path' });
+        sourcePath.createDiv({ cls: 'undo-move-source', text: record.sourcePath });
         fileItem.createDiv({ cls: 'undo-move-arrow', text: '→' });
-        fileItem.createDiv({ cls: 'undo-move-dest', text: record.destPath });
+        const destPath = fileItem.createDiv({ cls: 'undo-move-path' });
+        destPath.createDiv({ cls: 'undo-move-dest', text: record.destPath });
       }
     }
 
@@ -439,12 +439,8 @@ export default class MoveFilePlugin extends Plugin {
       id: 'move-referenced-files',
       name: 'Move Referenced Files',
       editorCheckCallback: (checking: boolean, editor: Editor, view: MarkdownView) => {
-        if (checking) {
-          return !!view.file;
-        }
-        if (view.file) {
-          new MoveFileModal(this.app, view.file).open();
-        }
+        if (checking) return !!view.file;
+        if (view.file) new MoveFileModal(this.app, view.file).open();
       }
     });
 
@@ -452,9 +448,7 @@ export default class MoveFilePlugin extends Plugin {
       id: 'undo-move-history',
       name: 'Move History (Undo)',
       checkCallback: (checking: boolean) => {
-        if (checking) {
-          return true;
-        }
+        if (checking) return true;
         new UndoMoveModal(this.app).open();
       }
     });

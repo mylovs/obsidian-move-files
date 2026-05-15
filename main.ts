@@ -27,19 +27,19 @@ interface HistoryGroup {
 }
 
 class Storage {
-  private app: App;
+  private plugin: Plugin;
 
-  constructor(app: App) {
-    this.app = app;
+  constructor(plugin: Plugin) {
+    this.plugin = plugin;
   }
 
   async getHistory(): Promise<MoveFileRecord[]> {
-    const data = await this.app.loadData();
+    const data = await this.plugin.loadData();
     return data?.history || [];
   }
 
   async saveHistory(records: MoveFileRecord[]): Promise<void> {
-    await this.app.saveData({ history: records });
+    await this.plugin.saveData({ history: records });
   }
 
   async addRecord(record: MoveFileRecord): Promise<void> {
@@ -181,10 +181,11 @@ class MoveFileModal extends Modal {
     return file?.selected ?? false;
   }
 
-  private async createFolderIfNotExists(path: string): Promise<void> {
-    const folder = this.app.vault.getAbstractFileByPath(path);
-    if (!folder) {
-      await this.app.vault.createFolder(path);
+   private async createFolderIfNotExists(path: string): Promise<void> {
+    const normalizedPath = path.replace(/^\/+/, '');
+    try {
+      await this.app.vault.createFolder(normalizedPath);
+    } catch {
     }
   }
 
@@ -210,11 +211,17 @@ class MoveFileModal extends Modal {
       const timestamp = Date.now();
       let movedCount = 0;
 
+      const normalizePath = (path: string): string => {
+        return path.replace(/^\/+/, '');
+      };
+
+      const destBasePath = normalizePath(this.destinationPath);
+
       for (const refFile of selectedFiles) {
         const file = this.app.vault.getAbstractFileByPath(refFile.path);
         if (!(file instanceof TFile)) continue;
 
-        const destPath = `${this.destinationPath}/${file.name}`;
+        const destPath = `${destBasePath}/${file.name}`;
         if (file.path === destPath) continue;
         
         const existingFile = this.app.vault.getAbstractFileByPath(destPath);
@@ -233,7 +240,7 @@ class MoveFileModal extends Modal {
       }
 
       if (this.moveSourceFile) {
-        const sourceDestPath = `${this.destinationPath}/${this.sourceFile.name}`;
+        const sourceDestPath = `${destBasePath}/${this.sourceFile.name}`;
         if (this.sourceFile.path !== sourceDestPath) {
           const existingFile = this.app.vault.getAbstractFileByPath(sourceDestPath);
           if (!existingFile) {
@@ -376,6 +383,7 @@ class UndoMoveModal extends Modal {
     const recordsToUndo = this.history.filter(r => r.timestamp === timestamp);
     let successCount = 0;
     let failCount = 0;
+    let skipCount = 0;
 
     for (const record of recordsToUndo) {
       const destFile = this.app.vault.getAbstractFileByPath(record.destPath);
@@ -385,10 +393,16 @@ class UndoMoveModal extends Modal {
         continue;
       }
 
+      const sourceExists = this.app.vault.getAbstractFileByPath(record.sourcePath);
+      if (sourceExists) {
+        skipCount++;
+        continue;
+      }
+
       try {
         await this.app.fileManager.renameFile(destFile, record.sourcePath);
         successCount++;
-      } catch {
+      } catch (error) {
         failCount++;
       }
     }
@@ -397,12 +411,17 @@ class UndoMoveModal extends Modal {
     this.history = await this.storage.getHistory();
     this.render();
 
-    if (failCount === 0) {
+    if (failCount === 0 && skipCount === 0) {
       new Notice(`Successfully undid ${successCount} file(s)`);
     } else if (successCount === 0) {
-      new Notice(`Failed to undo ${failCount} file(s)`);
+      let message = `Failed to undo ${failCount} file(s)`;
+      if (skipCount > 0) message += `, skipped ${skipCount} file(s)`;
+      new Notice(message);
     } else {
-      new Notice(`Undid ${successCount} file(s), ${failCount} failed`);
+      let message = `Undid ${successCount} file(s)`;
+      if (failCount > 0) message += `, ${failCount} failed`;
+      if (skipCount > 0) message += `, ${skipCount} skipped`;
+      new Notice(message);
     }
   }
 
@@ -474,7 +493,7 @@ export default class MoveFilePlugin extends Plugin {
   private storage: Storage;
 
   async onload(): Promise<void> {
-    this.storage = new Storage(this.app);
+    this.storage = new Storage(this);
 
     this.addCommand({
       id: 'move-referenced-files',

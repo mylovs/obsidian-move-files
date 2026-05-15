@@ -25,15 +25,15 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
 var Storage = class {
-  constructor(app) {
-    this.app = app;
+  constructor(plugin) {
+    this.plugin = plugin;
   }
   async getHistory() {
-    const data = await this.app.loadData();
+    const data = await this.plugin.loadData();
     return data?.history || [];
   }
   async saveHistory(records) {
-    await this.app.saveData({ history: records });
+    await this.plugin.saveData({ history: records });
   }
   async addRecord(record) {
     const history = await this.getHistory();
@@ -145,9 +145,10 @@ var MoveFileModal = class extends import_obsidian.Modal {
     return file?.selected ?? false;
   }
   async createFolderIfNotExists(path) {
-    const folder = this.app.vault.getAbstractFileByPath(path);
-    if (!folder) {
-      await this.app.vault.createFolder(path);
+    const normalizedPath = path.replace(/^\/+/, "");
+    try {
+      await this.app.vault.createFolder(normalizedPath);
+    } catch {
     }
   }
   async moveFiles() {
@@ -168,10 +169,14 @@ var MoveFileModal = class extends import_obsidian.Modal {
       await this.createFolderIfNotExists(this.destinationPath);
       const timestamp = Date.now();
       let movedCount = 0;
+      const normalizePath = (path) => {
+        return path.replace(/^\/+/, "");
+      };
+      const destBasePath = normalizePath(this.destinationPath);
       for (const refFile of selectedFiles) {
         const file = this.app.vault.getAbstractFileByPath(refFile.path);
         if (!(file instanceof import_obsidian.TFile)) continue;
-        const destPath = `${this.destinationPath}/${file.name}`;
+        const destPath = `${destBasePath}/${file.name}`;
         if (file.path === destPath) continue;
         const existingFile = this.app.vault.getAbstractFileByPath(destPath);
         if (existingFile) continue;
@@ -186,7 +191,7 @@ var MoveFileModal = class extends import_obsidian.Modal {
         movedCount++;
       }
       if (this.moveSourceFile) {
-        const sourceDestPath = `${this.destinationPath}/${this.sourceFile.name}`;
+        const sourceDestPath = `${destBasePath}/${this.sourceFile.name}`;
         if (this.sourceFile.path !== sourceDestPath) {
           const existingFile = this.app.vault.getAbstractFileByPath(sourceDestPath);
           if (!existingFile) {
@@ -302,28 +307,39 @@ var UndoMoveModal = class extends import_obsidian.Modal {
     const recordsToUndo = this.history.filter((r) => r.timestamp === timestamp);
     let successCount = 0;
     let failCount = 0;
+    let skipCount = 0;
     for (const record of recordsToUndo) {
       const destFile = this.app.vault.getAbstractFileByPath(record.destPath);
       if (!(destFile instanceof import_obsidian.TFile)) {
         failCount++;
         continue;
       }
+      const sourceExists = this.app.vault.getAbstractFileByPath(record.sourcePath);
+      if (sourceExists) {
+        skipCount++;
+        continue;
+      }
       try {
         await this.app.fileManager.renameFile(destFile, record.sourcePath);
         successCount++;
-      } catch {
+      } catch (error) {
         failCount++;
       }
     }
     await this.storage.removeByTimestamp(timestamp);
     this.history = await this.storage.getHistory();
     this.render();
-    if (failCount === 0) {
+    if (failCount === 0 && skipCount === 0) {
       new import_obsidian.Notice(`Successfully undid ${successCount} file(s)`);
     } else if (successCount === 0) {
-      new import_obsidian.Notice(`Failed to undo ${failCount} file(s)`);
+      let message = `Failed to undo ${failCount} file(s)`;
+      if (skipCount > 0) message += `, skipped ${skipCount} file(s)`;
+      new import_obsidian.Notice(message);
     } else {
-      new import_obsidian.Notice(`Undid ${successCount} file(s), ${failCount} failed`);
+      let message = `Undid ${successCount} file(s)`;
+      if (failCount > 0) message += `, ${failCount} failed`;
+      if (skipCount > 0) message += `, ${skipCount} skipped`;
+      new import_obsidian.Notice(message);
     }
   }
   async clearHistory() {
@@ -378,7 +394,7 @@ var UndoMoveModal = class extends import_obsidian.Modal {
 };
 var MoveFilePlugin = class extends import_obsidian.Plugin {
   async onload() {
-    this.storage = new Storage(this.app);
+    this.storage = new Storage(this);
     this.addCommand({
       id: "move-referenced-files",
       name: "Move Referenced Files",

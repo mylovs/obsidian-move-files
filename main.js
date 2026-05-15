@@ -24,29 +24,31 @@ __export(main_exports, {
 });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
-var STORAGE_KEY = "obsidian-move-file-history";
-var Storage = {
-  getHistory() {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    return stored ? JSON.parse(stored) : [];
-  },
-  saveHistory(records) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
-  },
-  addRecord(record) {
-    const history = this.getHistory();
+var Storage = class {
+  constructor(app) {
+    this.app = app;
+  }
+  async getHistory() {
+    const data = await this.app.loadData();
+    return data?.history || [];
+  }
+  async saveHistory(records) {
+    await this.app.saveData({ history: records });
+  }
+  async addRecord(record) {
+    const history = await this.getHistory();
     history.push(record);
-    this.saveHistory(history);
-  },
-  removeByIndex(index) {
-    const history = this.getHistory();
+    await this.saveHistory(history);
+  }
+  async removeByIndex(index) {
+    const history = await this.getHistory();
     history.splice(index, 1);
-    this.saveHistory(history);
-  },
-  removeByTimestamp(timestamp) {
-    const history = this.getHistory();
+    await this.saveHistory(history);
+  }
+  async removeByTimestamp(timestamp) {
+    const history = await this.getHistory();
     const filtered = history.filter((r) => r.timestamp !== timestamp);
-    this.saveHistory(filtered);
+    await this.saveHistory(filtered);
   }
 };
 function formatTimestamp(timestamp) {
@@ -68,7 +70,7 @@ function groupHistoryByTimestamp(history) {
   return Array.from(groups.entries()).map(([timestamp, records]) => ({ timestamp, records })).sort((a, b) => b.timestamp - a.timestamp);
 }
 var MoveFileModal = class extends import_obsidian.Modal {
-  constructor(app, file) {
+  constructor(app, file, storage) {
     super(app);
     this.groups = [];
     this.errorMessage = "";
@@ -76,6 +78,7 @@ var MoveFileModal = class extends import_obsidian.Modal {
     this.moveSourceFile = false;
     this.sourceFile = file;
     this.destinationPath = this.getDefaultDestinationPath();
+    this.storage = storage;
   }
   getDefaultDestinationPath() {
     const fileName = this.sourceFile.basename;
@@ -174,7 +177,7 @@ var MoveFileModal = class extends import_obsidian.Modal {
         if (existingFile) continue;
         const sourceFilePath = file.path;
         await this.app.fileManager.renameFile(file, destPath);
-        Storage.addRecord({
+        await this.storage.addRecord({
           sourcePath: sourceFilePath,
           destPath,
           timestamp,
@@ -189,7 +192,7 @@ var MoveFileModal = class extends import_obsidian.Modal {
           if (!existingFile) {
             const sourceFilePath = this.sourceFile.path;
             await this.app.fileManager.renameFile(this.sourceFile, sourceDestPath);
-            Storage.addRecord({
+            await this.storage.addRecord({
               sourcePath: sourceFilePath,
               destPath: sourceDestPath,
               timestamp,
@@ -290,9 +293,10 @@ var MoveFileModal = class extends import_obsidian.Modal {
   }
 };
 var UndoMoveModal = class extends import_obsidian.Modal {
-  constructor(app) {
+  constructor(app, storage) {
     super(app);
-    this.history = Storage.getHistory();
+    this.storage = storage;
+    this.history = [];
   }
   async undoMoveByTimestamp(timestamp) {
     const recordsToUndo = this.history.filter((r) => r.timestamp === timestamp);
@@ -311,8 +315,8 @@ var UndoMoveModal = class extends import_obsidian.Modal {
         failCount++;
       }
     }
-    Storage.removeByTimestamp(timestamp);
-    this.history = Storage.getHistory();
+    await this.storage.removeByTimestamp(timestamp);
+    this.history = await this.storage.getHistory();
     this.render();
     if (failCount === 0) {
       new import_obsidian.Notice(`Successfully undid ${successCount} file(s)`);
@@ -322,13 +326,14 @@ var UndoMoveModal = class extends import_obsidian.Modal {
       new import_obsidian.Notice(`Undid ${successCount} file(s), ${failCount} failed`);
     }
   }
-  clearHistory() {
-    Storage.saveHistory([]);
+  async clearHistory() {
+    await this.storage.saveHistory([]);
     this.history = [];
     this.render();
     new import_obsidian.Notice("History cleared");
   }
-  onOpen() {
+  async onOpen() {
+    this.history = await this.storage.getHistory();
     this.render();
   }
   render() {
@@ -373,12 +378,13 @@ var UndoMoveModal = class extends import_obsidian.Modal {
 };
 var MoveFilePlugin = class extends import_obsidian.Plugin {
   async onload() {
+    this.storage = new Storage(this.app);
     this.addCommand({
       id: "move-referenced-files",
       name: "Move Referenced Files",
       editorCheckCallback: (checking, editor, view) => {
         if (checking) return !!view.file;
-        if (view.file) new MoveFileModal(this.app, view.file).open();
+        if (view.file) new MoveFileModal(this.app, view.file, this.storage).open();
       }
     });
     this.addCommand({
@@ -386,15 +392,7 @@ var MoveFilePlugin = class extends import_obsidian.Plugin {
       name: "Move History (Undo)",
       checkCallback: (checking) => {
         if (checking) return true;
-        new UndoMoveModal(this.app).open();
-      }
-    });
-    this.addRibbonIcon("folder-up", "Move Referenced Files", (evt) => {
-      const activeView = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
-      if (activeView && activeView.file) {
-        new MoveFileModal(this.app, activeView.file).open();
-      } else {
-        new import_obsidian.Notice("Please open a markdown file first.");
+        new UndoMoveModal(this.app, this.storage).open();
       }
     });
   }

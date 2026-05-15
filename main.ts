@@ -1,7 +1,5 @@
 import { App, Editor, MarkdownView, Modal, Notice, Plugin, TFile } from 'obsidian';
 
-const STORAGE_KEY = 'obsidian-move-file-history';
-
 interface MoveFileRecord {
   sourcePath: string;
   destPath: string;
@@ -28,34 +26,40 @@ interface HistoryGroup {
   records: MoveFileRecord[];
 }
 
-const Storage = {
-  getHistory(): MoveFileRecord[] {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    return stored ? JSON.parse(stored) : [];
-  },
+class Storage {
+  private app: App;
 
-  saveHistory(records: MoveFileRecord[]): void {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
-  },
-
-  addRecord(record: MoveFileRecord): void {
-    const history = this.getHistory();
-    history.push(record);
-    this.saveHistory(history);
-  },
-
-  removeByIndex(index: number): void {
-    const history = this.getHistory();
-    history.splice(index, 1);
-    this.saveHistory(history);
-  },
-
-  removeByTimestamp(timestamp: number): void {
-    const history = this.getHistory();
-    const filtered = history.filter(r => r.timestamp !== timestamp);
-    this.saveHistory(filtered);
+  constructor(app: App) {
+    this.app = app;
   }
-};
+
+  async getHistory(): Promise<MoveFileRecord[]> {
+    const data = await this.app.loadData();
+    return data?.history || [];
+  }
+
+  async saveHistory(records: MoveFileRecord[]): Promise<void> {
+    await this.app.saveData({ history: records });
+  }
+
+  async addRecord(record: MoveFileRecord): Promise<void> {
+    const history = await this.getHistory();
+    history.push(record);
+    await this.saveHistory(history);
+  }
+
+  async removeByIndex(index: number): Promise<void> {
+    const history = await this.getHistory();
+    history.splice(index, 1);
+    await this.saveHistory(history);
+  }
+
+  async removeByTimestamp(timestamp: number): Promise<void> {
+    const history = await this.getHistory();
+    const filtered = history.filter(r => r.timestamp !== timestamp);
+    await this.saveHistory(filtered);
+  }
+}
 
 function formatTimestamp(timestamp: number): string {
   return new Date(timestamp).toLocaleString('zh-CN', {
@@ -88,11 +92,13 @@ class MoveFileModal extends Modal {
   private errorMessage = '';
   private successMessage = '';
   private moveSourceFile = false;
+  private storage: Storage;
 
-  constructor(app: App, file: TFile) {
+  constructor(app: App, file: TFile, storage: Storage) {
     super(app);
     this.sourceFile = file;
     this.destinationPath = this.getDefaultDestinationPath();
+    this.storage = storage;
   }
 
   private getDefaultDestinationPath(): string {
@@ -217,7 +223,7 @@ class MoveFileModal extends Modal {
         const sourceFilePath = file.path;
         await this.app.fileManager.renameFile(file, destPath);
 
-        Storage.addRecord({
+        await this.storage.addRecord({
           sourcePath: sourceFilePath,
           destPath,
           timestamp,
@@ -234,7 +240,7 @@ class MoveFileModal extends Modal {
             const sourceFilePath = this.sourceFile.path;
             await this.app.fileManager.renameFile(this.sourceFile, sourceDestPath);
             
-            Storage.addRecord({
+            await this.storage.addRecord({
               sourcePath: sourceFilePath,
               destPath: sourceDestPath,
               timestamp,
@@ -358,10 +364,12 @@ class MoveFileModal extends Modal {
 
 class UndoMoveModal extends Modal {
   private history: MoveFileRecord[];
+  private storage: Storage;
 
-  constructor(app: App) {
+  constructor(app: App, storage: Storage) {
     super(app);
-    this.history = Storage.getHistory();
+    this.storage = storage;
+    this.history = [];
   }
 
   private async undoMoveByTimestamp(timestamp: number): Promise<void> {
@@ -385,8 +393,8 @@ class UndoMoveModal extends Modal {
       }
     }
 
-    Storage.removeByTimestamp(timestamp);
-    this.history = Storage.getHistory();
+    await this.storage.removeByTimestamp(timestamp);
+    this.history = await this.storage.getHistory();
     this.render();
 
     if (failCount === 0) {
@@ -398,14 +406,15 @@ class UndoMoveModal extends Modal {
     }
   }
 
-  private clearHistory(): void {
-    Storage.saveHistory([]);
+  private async clearHistory(): Promise<void> {
+    await this.storage.saveHistory([]);
     this.history = [];
     this.render();
     new Notice('History cleared');
   }
 
-  onOpen(): void {
+  async onOpen(): Promise<void> {
+    this.history = await this.storage.getHistory();
     this.render();
   }
 
@@ -462,13 +471,17 @@ class UndoMoveModal extends Modal {
 }
 
 export default class MoveFilePlugin extends Plugin {
+  private storage: Storage;
+
   async onload(): Promise<void> {
+    this.storage = new Storage(this.app);
+
     this.addCommand({
       id: 'move-referenced-files',
       name: 'Move Referenced Files',
       editorCheckCallback: (checking: boolean, editor: Editor, view: MarkdownView) => {
         if (checking) return !!view.file;
-        if (view.file) new MoveFileModal(this.app, view.file).open();
+        if (view.file) new MoveFileModal(this.app, view.file, this.storage).open();
       }
     });
 
@@ -477,18 +490,18 @@ export default class MoveFilePlugin extends Plugin {
       name: 'Move History (Undo)',
       checkCallback: (checking: boolean) => {
         if (checking) return true;
-        new UndoMoveModal(this.app).open();
+        new UndoMoveModal(this.app, this.storage).open();
       }
     });
 
-    this.addRibbonIcon('folder-up', 'Move Referenced Files', (evt: MouseEvent) => {
-      const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
-      if (activeView && activeView.file) {
-        new MoveFileModal(this.app, activeView.file).open();
-      } else {
-        new Notice('Please open a markdown file first.');
-      }
-    });
+    // this.addRibbonIcon('folder-up', 'Move Referenced Files', (evt: MouseEvent) => {
+    //   const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+    //   if (activeView && activeView.file) {
+    //     new MoveFileModal(this.app, activeView.file, this.storage).open();
+    //   } else {
+    //     new Notice('Please open a markdown file first.');
+    //   }
+    // });
   }
 
   onunload(): void {

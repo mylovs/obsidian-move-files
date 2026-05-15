@@ -2,11 +2,18 @@
 {
   "id": "obsidian-move-filess",
   "name": "Move Files",
-  "version": "1.0.1",
-  "minAppVersion": "1.0.1",
+  "version": "1.4.0",
+  "minAppVersion": "0.9.0",
   "description": "A plugin to help move referenced files in Obsidian notes",
-  "author": "cfy",
-  "authorUrl": "",
-  "fundingUrl": "",
+  "author": "mylovs",
+  "authorUrl": "https://github.com/mylovs/obsidian-move-files",
+  "fundingUrl": "https://github.com/mylovs/obsidian-move-files#funding",
+  "license": "MIT",
+  "tags": [
+    "files",
+    "move",
+    "referenced",
+    "notes"
+  ],
   "isDesktopOnly": false
 }
